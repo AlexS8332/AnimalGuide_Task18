@@ -209,7 +209,7 @@ func builderHead(is *Issue, materials []Material) *Fact {
 	if is.Title == "" && is.Lead == "" || len(materials) == 0 {
 		return nil
 	}
-	f := Fact{Text: "Заголовок и вступление выпуска: " + text}
+	f := Fact{Text: text}
 	for _, m := range materials {
 		f.Sources = append(f.Sources, m.ID)
 	}

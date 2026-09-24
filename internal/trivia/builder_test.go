@@ -328,7 +328,7 @@ func TestBuilderScreensFacts(t *testing.T) {
 	// Последним пунктом проверяющему уходят заголовок и вступление.
 	got := builderTexts(r.ver.got)
 	if len(got) != len(wantChecked)+1 || !reflect.DeepEqual(got[:len(wantChecked)], wantChecked) ||
-		!strings.HasPrefix(got[len(got)-1], "Заголовок и вступление выпуска: ") {
+		got[len(got)-1] != "Манул. Кот степей." {
 		t.Errorf("проверяющему ушло %q, ждали %q и заголовок", got, wantChecked)
 	}
 	if got := r.ver.got[1]; !reflect.DeepEqual(got.Sources, []string{"S2", "S3"}) || got.Verdict != "" {
@@ -573,7 +573,7 @@ func TestBuilderDefaultNow(t *testing.T) {
 // названием вида и уходят в Dropped; факты при этом не страдают.
 func TestBuilderRejectsHead(t *testing.T) {
 	r := builderSetup(t, builderFacts(3))
-	head := "Заголовок и вступление выпуска: " + strings.TrimSpace(r.ed.draft.Title) + ". " + r.ed.draft.Lead
+	head := strings.TrimSpace(r.ed.draft.Title) + ". " + r.ed.draft.Lead
 	r.ver.reject = map[string]string{head: "в материалах нет «степей»"}
 	is, err := r.build(t)
 	if err != nil {
