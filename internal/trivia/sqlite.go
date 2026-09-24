@@ -77,6 +77,9 @@ var sqliteSteps = []string{
 
 	// Шаг 2 — выпуски фактов; почему таблица устроена так — sqlite_issue.go.
 	sqliteIssueStep,
+
+	// Шаг 3 — сводки; устройство таблицы — sqlite_summary.go.
+	sqliteSummaryStep,
 }
 
 // SQLite — PickStore поверх общей базы приложения. Базу открывает и
