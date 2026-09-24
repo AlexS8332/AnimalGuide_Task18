@@ -573,7 +573,7 @@ func TestBuilderDefaultNow(t *testing.T) {
 // названием вида и уходят в Dropped; факты при этом не страдают.
 func TestBuilderRejectsHead(t *testing.T) {
 	r := builderSetup(t, builderFacts(3))
-	head := "Заголовок и вступление выпуска: " + r.ed.draft.Title + ". " + r.ed.draft.Lead
+	head := "Заголовок и вступление выпуска: " + strings.TrimSpace(r.ed.draft.Title) + ". " + r.ed.draft.Lead
 	r.ver.reject = map[string]string{head: "в материалах нет «степей»"}
 	is, err := r.build(t)
 	if err != nil {
