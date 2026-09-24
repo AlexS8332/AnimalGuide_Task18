@@ -14,7 +14,13 @@
 //  4. кандидат проверяется (Checker): есть статья в Википедии и не меньше
 //     MinOccurrences наблюдений в GBIF. Итог проверки кэшируется на CheckTTL;
 //  5. отвергнутые кандидаты с причиной попадают в Pick.Rejected — видно,
-//     почему выбран именно этот вид. Не больше MaxAttempts кандидатов.
+//     почему выбран именно этот вид. MaxAttempts ограничивает число
+//     проверок (кэш или Checker); недавние виды проверку не тратят, поэтому
+//     Pick.Attempts может быть больше MaxAttempts.
+//
+// Виды без кода МСОП (и с кодом вне известного списка) собираются в
+// корзину OtherStatus. Все проверки упали сетью — ErrCheckFailed, а не
+// ErrNoCandidate: «источник недоступен» и «пригодных нет» — разные беды.
 package trivia
 
 import (
@@ -64,6 +70,8 @@ type Eligibility struct {
 // Checker проверяет пригодность вида. Сетевая ошибка — err (вид не
 // отвергается навсегда, а пропускается в этом запуске); «статьи нет» или
 // «наблюдений мало» — не ошибка, а Eligibility с OK=false и причиной.
+// Вместе с err возвращается Eligibility с ReasonCheckFailed: такой итог
+// PickStore.SaveCheck отвергает, случайно закэшировать сбой нельзя.
 // minOccurrences — порог наблюдений.
 type Checker interface {
 	Check(ctx context.Context, sp mdd.Species, minOccurrences int) (Eligibility, error)
@@ -113,7 +121,8 @@ type PickStore interface {
 }
 
 // PickOptions — настройки выбора. Нулевые поля — значения по умолчанию
-// (Defaults).
+// (Defaults); отрицательные NoRepeat и CheckTTL отключают запрет повторов
+// и кэш проверок.
 type PickOptions struct {
 	NoRepeat       time.Duration      // 30 дней
 	CheckTTL       time.Duration      // 30 дней
