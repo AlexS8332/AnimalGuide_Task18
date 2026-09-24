@@ -290,8 +290,14 @@ func SummaryJob(d SummaryDeps, daily string) schedule.Job {
 			if period <= 0 {
 				period = 24 * time.Hour
 			}
-			to := now().Truncate(time.Minute)
-			s, err := BuildSummary(ctx, d, to.Add(-period), to, schedule.TriggerSchedule)
+			// Ручная сводка — «до этой минуты включительно»: округление
+			// вниз выбросило бы выпуск, собранный секунды назад. Её период
+			// с суточными не стыкуется, и это не нужно.
+			to, trigger := now().Truncate(time.Minute), schedule.TriggerSchedule
+			if r, ok := schedule.CurrentRun(ctx); ok && r.Trigger == schedule.TriggerManual {
+				to, trigger = now(), schedule.TriggerManual
+			}
+			s, err := BuildSummary(ctx, d, to.Add(-period), to, trigger)
 			if s.ID == 0 && s.Cost.USD == 0 && err != nil {
 				return schedule.Outcome{}, err
 			}

@@ -32,6 +32,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/AlexS8332/AnimalGuide_Task18/internal/daemon"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/db"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/mcp"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/mdd"
@@ -46,6 +47,13 @@ func main() {
 	mddURL := flag.String("mdd-url", os.Getenv("MDD_URL"), "адрес архива MDD; пусто — репозиторий MDD на GitHub (переменная MDD_URL)")
 	mddSync := flag.Bool("mdd-sync", true, "скачать справочник MDD в фоне, если база пуста")
 	mddUpdate := flag.Bool("mdd-update", false, "загрузить или обновить справочник MDD и выйти")
+	var dc daemonFlags
+	flag.BoolVar(&dc.on, "daemon", false, "режим 24/7: выпуск фактов по расписанию, проверка релиза MDD, суточная сводка")
+	flag.StringVar(&dc.run, "run", "", "выполнить одно задание демона (issue, summary, mdd) и выйти")
+	flag.DurationVar(&dc.every, "every", daemon.DefaultEvery, "как часто собирать выпуск (демон)")
+	flag.StringVar(&dc.summaryAt, "summary-at", daemon.DefaultSummaryAt, "время суточной сводки, ЧЧ:ММ")
+	flag.StringVar(&dc.mddAt, "mdd-at", daemon.DefaultMDDAt, "время проверки релиза MDD, ЧЧ:ММ")
+	flag.Float64Var(&dc.budget, "budget", daemon.DefaultBudget, "лимит расходов на модель в сутки, $; отрицательный — без лимита")
 	flag.Parse()
 
 	level := slog.LevelWarn
@@ -53,6 +61,10 @@ func main() {
 		level = slog.LevelInfo
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+
+	if dc.on || dc.run != "" {
+		os.Exit(runDaemon(dc, *dataDir, *mddURL, logger))
+	}
 
 	// Кэш источников у сервера свой: это второй кэш рядом с кэшем
 	// приложения, и он — часть цены механизма.

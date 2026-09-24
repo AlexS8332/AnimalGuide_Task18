@@ -451,7 +451,7 @@ func (s *Scheduler) execute(parent, daemon context.Context, j *job, r Run) Run {
 	// быть виден HTTP-клиентам модели и справочников (ctx.Deadline), а
 	// Clock.After этого не даёт. Предел — защита от зависшей сети, а не
 	// часть расписания.
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	ctx, cancel := context.WithTimeout(WithRun(parent, r), timeout)
 	defer cancel()
 	out, err := call(ctx, j.Run)
 

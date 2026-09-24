@@ -579,3 +579,12 @@ func (f *collectFake) seen() []string {
 	defer f.mu.Unlock()
 	return append([]string(nil), f.calls...)
 }
+
+// Латинский заголовок русской статьи — не русское название.
+func TestCollectHasCyrillic(t *testing.T) {
+	for s, want := range map[string]bool{"Манул": true, "Lepilemur tymerlachsonorum": false, "": false, "Ёж": true} {
+		if got := collectHasCyrillic(s); got != want {
+			t.Errorf("collectHasCyrillic(%q) = %v", s, got)
+		}
+	}
+}

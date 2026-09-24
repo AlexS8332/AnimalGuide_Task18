@@ -60,6 +60,19 @@ type systemClock struct{}
 func (systemClock) Now() time.Time                         { return time.Now() }
 func (systemClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
+type runKey struct{}
+
+// WithRun кладёт в контекст запись о запуске: задание узнаёт, почему его
+// запустили (Trigger) и какой слот (Scheduled). Планировщик делает это сам.
+func WithRun(ctx context.Context, r Run) context.Context { return context.WithValue(ctx, runKey{}, r) }
+
+// CurrentRun — запуск из контекста; ok=false — задание вызвано не
+// планировщиком (тест, разовый вызов кодом).
+func CurrentRun(ctx context.Context) (Run, bool) {
+	r, ok := ctx.Value(runKey{}).(Run)
+	return r, ok
+}
+
 // Outcome — что задание сообщает о запуске.
 type Outcome struct {
 	// CostUSD — расход на модель; из него считается дневной лимит.
@@ -92,7 +105,7 @@ type Run struct {
 	Trigger   string    `json:"trigger"`   // Trigger*
 	Scheduled time.Time `json:"scheduled"` // слот расписания (для manual — время нажатия)
 	Started   time.Time `json:"started"`
-	Finished  time.Time `json:"finished,omitempty"`
+	Finished  time.Time `json:"finished,omitzero"`
 	Status    string    `json:"status"` // Run*
 	Error     string    `json:"error,omitempty"`
 	Outcome
@@ -135,7 +148,7 @@ type JobStatus struct {
 	Daily   string    `json:"daily,omitempty"`
 	Paid    bool      `json:"paid"`
 	Running bool      `json:"running"`
-	Next    time.Time `json:"next"`
+	Next    time.Time `json:"next,omitzero"`
 	Last    *Run      `json:"last,omitempty"`
 }
 

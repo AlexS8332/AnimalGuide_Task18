@@ -101,8 +101,14 @@ func (c *WebCollector) Collect(ctx context.Context, p Pick, sp mdd.Species) (Dos
 	nameRu := ""
 	if art.lang == "ru" {
 		nameRu = collectStripQualifier(art.title)
-	} else if e.GBIFKey != 0 {
-		// Статья английская — русское имя берётся из народных названий GBIF.
+	}
+	// У малоизвестных видов русская статья часто названа латынью
+	// («Lepilemur tymerlachsonorum»): это не русское название. Тогда, как и
+	// для английской статьи, имя берётся из народных названий GBIF.
+	if !collectHasCyrillic(nameRu) {
+		nameRu = ""
+	}
+	if nameRu == "" && e.GBIFKey != 0 {
 		// Его сбой не мешает выпуску: заголовок тогда будет латинским.
 		names, err := tools.NewGBIF(c.gbifBase(), c.fetcher()).Vernacular(ctx, e.GBIFKey, "rus")
 		if err == nil && len(names) > 0 {
@@ -668,4 +674,14 @@ func collectWriteCountries(b *strings.Builder, list []CountryCount) {
 		}
 		fmt.Fprintf(b, "- %s — %d (%s)\n", countryLabel(cc), cc.Count, collectRangeRu[cc.Range])
 	}
+}
+
+// collectHasCyrillic — есть ли в строке кириллица.
+func collectHasCyrillic(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Cyrillic, r) {
+			return true
+		}
+	}
+	return false
 }

@@ -876,3 +876,27 @@ func TestStatus(t *testing.T) {
 	}
 
 }
+
+// Задание видит свой запуск в контексте: сводка по кнопке ведёт себя иначе,
+// чем по расписанию.
+func TestCurrentRunInContext(t *testing.T) {
+	var got schedule.Run
+	var ok bool
+	job := schedule.Job{Name: "x", Every: time.Hour, Run: func(ctx context.Context) (schedule.Outcome, error) {
+		got, ok = schedule.CurrentRun(ctx)
+		return schedule.Outcome{}, nil
+	}}
+	s, err := schedule.New(schedule.NewMemory(), []schedule.Job{job}, schedule.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RunNow(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got.Trigger != schedule.TriggerManual || got.Job != "x" || got.ID == 0 {
+		t.Errorf("запуск в контексте: %+v, ok=%v", got, ok)
+	}
+	if _, ok := schedule.CurrentRun(context.Background()); ok {
+		t.Error("в пустом контексте нашёлся запуск")
+	}
+}
