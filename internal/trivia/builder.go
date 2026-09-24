@@ -136,15 +136,33 @@ func (b *Builder) run(ctx context.Context, p Pick, sp mdd.Species, is *Issue) er
 	kept, dropped := builderScreen(draft.Facts, d.Materials)
 	is.Dropped = append(is.Dropped, dropped...)
 
+	// Заголовок и вступление модель пишет так же свободно, как факты, и так
+	// же может приукрасить («молчаливая мышь из перуанских туманов»).
+	// Проверяются тем же запросом, последним пунктом со ссылкой на всё
+	// досье; не подтвердились — заголовок становится названием вида, а
+	// вступление убирается. Это дешевле, чем отдельный запрос.
+	head := builderHead(is, d.Materials)
 	var confirmed []Fact
 	if len(kept) > 0 {
-		verdicts, spend, err := b.Verifier.Verify(ctx, d, kept)
+		check := kept
+		if head != nil {
+			check = append(append([]Fact(nil), kept...), *head)
+		}
+		verdicts, spend, err := b.Verifier.Verify(ctx, d, check)
 		builderAddSpend(is, spend)
 		if err != nil {
 			return fmt.Errorf("проверка: %w", err)
 		}
-		if len(verdicts) != len(kept) {
-			return fmt.Errorf("проверка: %d вердиктов на %d фактов", len(verdicts), len(kept))
+		if len(verdicts) != len(check) {
+			return fmt.Errorf("проверка: %d вердиктов на %d фактов", len(verdicts), len(check))
+		}
+		if head != nil {
+			if v := verdicts[len(kept)]; !v.OK {
+				head.Verdict = builderHeadPrefix + strings.TrimSpace(v.Reason)
+				is.Dropped = append(is.Dropped, *head)
+				is.Title, is.Lead = builderFallbackTitle(is, sp), ""
+			}
+			verdicts = verdicts[:len(kept)]
 		}
 		for i, f := range kept {
 			if verdicts[i].OK {
@@ -179,6 +197,34 @@ func (b *Builder) run(ctx context.Context, p Pick, sp mdd.Species, is *Issue) er
 			len(draft.Facts), len(is.Dropped))
 	}
 	return nil
+}
+
+// builderHeadPrefix — метка отброшенных заголовка и вступления в Dropped.
+const builderHeadPrefix = "заголовок и вступление: "
+
+// builderHead — заголовок и вступление как пункт проверки со ссылкой на все
+// материалы; nil, если проверять нечего.
+func builderHead(is *Issue, materials []Material) *Fact {
+	text := strings.TrimSpace(strings.TrimSpace(is.Title) + ". " + is.Lead)
+	if is.Title == "" && is.Lead == "" || len(materials) == 0 {
+		return nil
+	}
+	f := Fact{Text: "Заголовок и вступление выпуска: " + text}
+	for _, m := range materials {
+		f.Sources = append(f.Sources, m.ID)
+	}
+	return &f
+}
+
+// builderFallbackTitle — заголовок вместо отвергнутого: название вида.
+func builderFallbackTitle(is *Issue, sp mdd.Species) string {
+	if is.NameRu != "" {
+		return is.NameRu + " (" + is.SciName + ")"
+	}
+	if is.SciName != "" {
+		return is.SciName
+	}
+	return sp.SciName
 }
 
 // builderAddSpend дописывает расход шага; пустой (шаг упал до модели) не

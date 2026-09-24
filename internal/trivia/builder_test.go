@@ -325,8 +325,11 @@ func TestBuilderScreensFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantChecked := []string{"Хороший факт один.", "Хороший факт два.", "Хороший факт три."}
-	if got := builderTexts(r.ver.got); !reflect.DeepEqual(got, wantChecked) {
-		t.Errorf("проверяющему ушло %q, ждали %q", got, wantChecked)
+	// Последним пунктом проверяющему уходят заголовок и вступление.
+	got := builderTexts(r.ver.got)
+	if len(got) != len(wantChecked)+1 || !reflect.DeepEqual(got[:len(wantChecked)], wantChecked) ||
+		!strings.HasPrefix(got[len(got)-1], "Заголовок и вступление выпуска: ") {
+		t.Errorf("проверяющему ушло %q, ждали %q и заголовок", got, wantChecked)
 	}
 	if got := r.ver.got[1]; !reflect.DeepEqual(got.Sources, []string{"S2", "S3"}) || got.Verdict != "" {
 		t.Errorf("факт после чистки: %+v", got)
@@ -412,7 +415,7 @@ func TestBuilderStepFailures(t *testing.T) {
 			r.ed.draft.Facts = append(r.ed.draft.Facts, trivia.Fact{Text: "Без ссылки."})
 		}, "проверка: ", []trivia.Spend{builderEditorSpend, builderVerifierSpend}, 3, "Манул", 1},
 		{"проверка: не то число вердиктов", func(r *builderRig) { r.ver.short = true },
-			"проверка: 2 вердиктов на 3 фактов", []trivia.Spend{builderEditorSpend, builderVerifierSpend}, 3, "Манул", 0},
+			"проверка: 3 вердиктов на 4 фактов", []trivia.Spend{builderEditorSpend, builderVerifierSpend}, 3, "Манул", 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -563,5 +566,27 @@ func TestBuilderDefaultNow(t *testing.T) {
 	}
 	if is.CreatedAt.Before(before) || is.CreatedAt.After(time.Now()) || is.Took < 0 {
 		t.Errorf("CreatedAt %s, Took %s", is.CreatedAt, is.Took)
+	}
+}
+
+// Заголовок и вступление, не подтверждённые проверяющим, заменяются
+// названием вида и уходят в Dropped; факты при этом не страдают.
+func TestBuilderRejectsHead(t *testing.T) {
+	r := builderSetup(t, builderFacts(3))
+	head := "Заголовок и вступление выпуска: " + r.ed.draft.Title + ". " + r.ed.draft.Lead
+	r.ver.reject = map[string]string{head: "в материалах нет «степей»"}
+	is, err := r.build(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if is.Status != trivia.IssueOK || len(is.Facts) != 3 {
+		t.Fatalf("состояние %q, фактов %d", is.Status, len(is.Facts))
+	}
+	if is.Lead != "" || is.Title == r.ed.draft.Title || !strings.Contains(is.Title, is.SciName) {
+		t.Errorf("заголовок %q, вступление %q: ждали название вида и пустое вступление", is.Title, is.Lead)
+	}
+	last := is.Dropped[len(is.Dropped)-1]
+	if !strings.HasPrefix(last.Verdict, "заголовок и вступление: ") || !strings.Contains(last.Verdict, "степей") {
+		t.Errorf("в отброшенных: %+v", last)
 	}
 }
