@@ -35,7 +35,11 @@ type Spec struct {
 	Description string          `json:"description"`
 	Parameters  json.RawMessage `json:"parameters"`
 	Untrusted   bool            `json:"untrusted,omitempty"`
-	Via         string          `json:"via,omitempty"`
+	// Write — вызов меняет состояние или тратит деньги (run_now запускает
+	// платный выпуск). MCP-сервер снимает у такого инструмента пометку
+	// «только чтение»; модели признак не уходит.
+	Write bool   `json:"write,omitempty"`
+	Via   string `json:"via,omitempty"`
 }
 
 // CallFunc — исполнение вызова.
