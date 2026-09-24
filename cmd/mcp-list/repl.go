@@ -199,7 +199,11 @@ func (r *replSession) printTools(filter string) {
 			continue
 		}
 		shown++
-		fmt.Printf("  %-*s  %s\n", width, t.Name, t.Title)
+		title := t.Title
+		if !readOnly(t) {
+			title += "  " + writeMark
+		}
+		fmt.Printf("  %-*s  %s\n", width, t.Name, title)
 	}
 	if shown == 0 {
 		fmt.Printf("  по «%s» ничего не нашлось\n", filter)

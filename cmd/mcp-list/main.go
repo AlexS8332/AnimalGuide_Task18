@@ -8,18 +8,21 @@
 // Сервер запускается дочерним процессом, общение идёт по его stdin и
 // stdout. По умолчанию запускается сервер из этого репозитория, но в
 // аргументах можно передать любую другую команду: клиент ничего не знает
-// про животных, он знает только протокол.
+// про животных, он знает только протокол. С -url сервер не запускается:
+// клиент подключается по HTTP к уже работающему демону.
 //
 //	mcp-list                                 # сервер из этого репозитория
 //	mcp-list -schemas                        # плюс полные JSON Schema
 //	mcp-list -i                              # ручной режим: команды с клавиатуры
 //	mcp-list -call read_wikipedia -args 'title=Манул section=Питание'
+//	mcp-list -url http://127.0.0.1:8766      # демон по HTTP, токен из MCP_TOKEN
 //	mcp-list -- npx @modelcontextprotocol/server-everything
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -66,6 +69,10 @@ func repoRoot() (string, bool) {
 // demoCalls — проверочные вызовы после получения списка. Список
 // инструментов сам по себе ещё не доказывает, что сервер работает:
 // доказывает вызов. Нужна сеть: сервер ходит в Википедию и GBIF.
+//
+// Зовутся только инструменты, объявившие ReadOnlyHint: проверка не должна
+// запускать задачи демона и тратить деньги на модель. Инструмент, который
+// меняет состояние, человек вызывает явно — через -call или ручной режим.
 var demoCalls = []struct {
 	Tool string
 	Args map[string]any
@@ -90,23 +97,42 @@ func main() {
 		interact = flag.Bool("i", false, "ручной режим: вводить команды и вызовы с клавиатуры")
 		full     = flag.Bool("full", false, "печатать результаты вызовов целиком, без обрезки")
 		timeout  = flag.Duration("timeout", 2*time.Minute, "предел времени: на всю работу, а в ручном режиме — на каждый вызов")
+		addr     = flag.String("url", "", "подключиться по HTTP к работающему серверу (http://127.0.0.1:8766), а не запускать его")
+		token    = flag.String("token", os.Getenv("MCP_TOKEN"), "токен для -url (по умолчанию из MCP_TOKEN)")
 	)
 	flag.Usage = usage
 	flag.Parse()
 
-	// Свою команду запускаем как есть, в текущем каталоге. Для сервера
-	// из этого репозитория каталог выбираем сами: относительный путь к
-	// его пакету имеет смысл только из корня.
-	command, dir := flag.Args(), ""
-	if len(command) == 0 {
-		root, ok := repoRoot()
-		if !ok {
-			fmt.Fprintf(os.Stderr, "ошибка: не нашёл каталог %s ни в рабочем каталоге, ни выше по дереву.\n", serverPackage)
-			fmt.Fprintln(os.Stderr, "Запустите клиента из репозитория или передайте команду сервера аргументом:")
-			fmt.Fprintln(os.Stderr, "  mcp-list -- путь/к/animals-mcp")
-			os.Exit(1)
+	var (
+		tg  target
+		err error
+	)
+	if *addr != "" {
+		if flag.NArg() > 0 {
+			fmt.Fprintln(os.Stderr, "ошибка: либо -url, либо команда запуска сервера — не вместе")
+			os.Exit(2)
 		}
-		command, dir = defaultServer, root
+		if tg, err = httpTarget(*addr, *token); err != nil {
+			fmt.Fprintln(os.Stderr, "ошибка:", err)
+			os.Exit(2)
+		}
+	} else {
+		// Свою команду запускаем как есть, в текущем каталоге. Для сервера
+		// из этого репозитория каталог выбираем сами: относительный путь к
+		// его пакету имеет смысл только из корня.
+		command, dir := flag.Args(), ""
+		if len(command) == 0 {
+			root, ok := repoRoot()
+			if !ok {
+				fmt.Fprintf(os.Stderr, "ошибка: не нашёл каталог %s ни в рабочем каталоге, ни выше по дереву.\n", serverPackage)
+				fmt.Fprintln(os.Stderr, "Запустите клиента из репозитория или передайте команду сервера аргументом:")
+				fmt.Fprintln(os.Stderr, "  mcp-list -- путь/к/animals-mcp")
+				fmt.Fprintln(os.Stderr, "или подключитесь к работающему серверу: mcp-list -url http://127.0.0.1:8766")
+				os.Exit(1)
+			}
+			command, dir = defaultServer, root
+		}
+		tg = stdioTarget(command, dir)
 	}
 
 	// Ctrl+C прерывает и долгий вызов, и ожидание ввода.
@@ -122,7 +148,7 @@ func main() {
 		defer cancel()
 	}
 
-	if err := run(ctx, command, dir, options{
+	if err := run(ctx, tg, options{
 		schemas:     *schemas,
 		call:        *call,
 		args:        *args,
@@ -146,13 +172,51 @@ type options struct {
 	timeout     time.Duration
 }
 
-func run(ctx context.Context, command []string, dir string, o options) error {
-	// 1. Соединение. Клиент запускает сервер и говорит с ним по stdio;
-	// stderr сервера остаётся нашим, поэтому его сообщения видно.
+// target — куда подключаться и как это описать человеку.
+type target struct {
+	transport mcp.Transport
+	fields    [][2]string // строки раздела «Соединение»
+}
+
+// stdioTarget — сервер дочерним процессом: stderr сервера остаётся
+// нашим, поэтому его сообщения видно.
+func stdioTarget(command []string, dir string) target {
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Dir = dir
 	cmd.Stderr = os.Stderr
+	tg := target{transport: &mcp.CommandTransport{Command: cmd}, fields: [][2]string{
+		{"транспорт", "stdio, сервер запущен дочерним процессом"},
+		{"команда", strings.Join(command, " ")},
+	}}
+	// Каталог называем, только когда он не совпадает с текущим: это
+	// диагностика для запуска из отладчика или из подкаталога, а при
+	// обычном запуске из корня строка была бы шумом.
+	if cwd, err := os.Getwd(); err == nil && dir != "" && dir != cwd {
+		tg.fields = append(tg.fields, [2]string{"каталог", dir})
+	}
+	return tg
+}
 
+// httpTarget — сервер уже работает демоном. Токен не печатается: видно
+// только, задан ли он.
+func httpTarget(addr, token string) (target, error) {
+	t, err := httpTransport(addr, token)
+	if err != nil {
+		return target{}, err
+	}
+	auth := "нет"
+	if token != "" {
+		auth = "задан (Authorization: Bearer)"
+	}
+	return target{transport: t, fields: [][2]string{
+		{"транспорт", "Streamable HTTP, сервер уже работает"},
+		{"адрес", t.Endpoint},
+		{"токен", auth},
+	}}, nil
+}
+
+func run(ctx context.Context, tg target, o options) error {
+	// 1. Соединение.
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "mcp-list",
 		Version: "1.0.0",
@@ -160,17 +224,15 @@ func run(ctx context.Context, command []string, dir string, o options) error {
 	}, nil)
 
 	section("Соединение")
-	field("транспорт", "stdio, сервер запущен дочерним процессом")
-	field("команда", strings.Join(command, " "))
-	// Каталог называем, только когда он не совпадает с текущим: это
-	// диагностика для запуска из отладчика или из подкаталога, а при
-	// обычном запуске из корня строка была бы шумом.
-	if cwd, err := os.Getwd(); err == nil && dir != "" && dir != cwd {
-		field("каталог", dir)
+	for _, f := range tg.fields {
+		field(f[0], f[1])
 	}
 
-	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	session, err := client.Connect(ctx, tg.transport, nil)
 	if err != nil {
+		if errors.Is(err, errUnauthorized) {
+			return errUnauthorized
+		}
 		return fmt.Errorf("соединение не установлено: %w", err)
 	}
 	defer session.Close()
@@ -232,11 +294,31 @@ func run(ctx context.Context, command []string, dir string, o options) error {
 	fmt.Println()
 	section("Проверочные вызовы")
 	for _, c := range demoCalls {
+		if why := demoSkip(tools, c.Tool); why != "" {
+			fmt.Printf("\n  – %s пропущен: %s\n", c.Tool, why)
+			continue
+		}
 		if err := callTool(ctx, session, c.Tool, c.Args, o.full); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// demoSkip — почему проверочный вызов не делается; пусто — делается.
+// Инструмента нет в списке — у сервера другой набор (демон, чужой сервер),
+// звать его значит получить заведомую ошибку протокола.
+func demoSkip(tools []*mcp.Tool, name string) string {
+	for _, t := range tools {
+		if t.Name != name {
+			continue
+		}
+		if !readOnly(t) {
+			return "меняет состояние или тратит деньги (нет ReadOnlyHint) — вызывайте явно: -call " + name
+		}
+		return ""
+	}
+	return "на сервере нет такого инструмента"
 }
 
 // listTools забирает весь список, сколько бы страниц в нём ни было.
@@ -257,6 +339,9 @@ func printTool(n int, t *mcp.Tool, withSchema bool) {
 	title := t.Name
 	if t.Title != "" {
 		title += " — " + t.Title
+	}
+	if !readOnly(t) {
+		title += "  " + writeMark
 	}
 	fmt.Printf("\n%2d. %s\n", n, title)
 	for _, line := range wrap(t.Description, 76) {
@@ -438,7 +523,7 @@ func wrap(s string, width int) []string {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "mcp-list — подключается к MCP-серверу и печатает список его инструментов.")
-	fmt.Fprintln(os.Stderr, "\nИспользование:\n  mcp-list [флаги] [-- команда запуска сервера]")
+	fmt.Fprintln(os.Stderr, "\nИспользование:\n  mcp-list [флаги] [-- команда запуска сервера]\n  mcp-list -url http://127.0.0.1:8766 [флаги]   # сервер уже работает, токен из MCP_TOKEN")
 	fmt.Fprintln(os.Stderr, "\nБез команды запускается сервер из этого репозитория:")
 	fmt.Fprintln(os.Stderr, "  "+strings.Join(defaultServer, " "))
 	fmt.Fprintln(os.Stderr, "\nФлаги:")
