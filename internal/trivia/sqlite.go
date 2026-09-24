@@ -74,6 +74,9 @@ var sqliteSteps = []string{
 		occurrences INTEGER NOT NULL
 	);
 	CREATE INDEX trivia_check_checked_at ON trivia_check (checked_at);`,
+
+	// Шаг 2 — выпуски фактов; почему таблица устроена так — sqlite_issue.go.
+	sqliteIssueStep,
 }
 
 // SQLite — PickStore поверх общей базы приложения. Базу открывает и
@@ -98,6 +101,44 @@ func NewSQLite(ctx context.Context, conn *sql.DB) (*SQLite, error) {
 
 // sqliteTime — наносекунды Unix обратно во время (UTC).
 func sqliteTime(ns int64) time.Time { return time.Unix(0, ns).UTC() }
+
+// sqliteScanner — общее у *sql.Row и *sql.Rows: одно чтение строки на оба
+// случая (список выборов и выбор по ID).
+type sqliteScanner interface {
+	Scan(dest ...any) error
+}
+
+// sqlitePickColumns — столбцы trivia_pick в порядке sqliteScanPick.
+const sqlitePickColumns = `id, species_id, sci_name, iucn, picked_at,
+	attempts, rejected, eligibility, weights`
+
+// sqliteScanPick читает выбор из строки с sqlitePickColumns. sql.ErrNoRows
+// возвращается как есть: «нет» решает вызывающий.
+func sqliteScanPick(row sqliteScanner) (Pick, error) {
+	var (
+		p                          Pick
+		at                         int64
+		rejected, elig, weightsRaw string
+	)
+	if err := row.Scan(&p.ID, &p.SpeciesID, &p.SciName, &p.IUCN, &at,
+		&p.Attempts, &rejected, &elig, &weightsRaw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Pick{}, err
+		}
+		return Pick{}, fmt.Errorf("trivia: выборы: %w", err)
+	}
+	p.PickedAt = sqliteTime(at)
+	if err := json.Unmarshal([]byte(rejected), &p.Rejected); err != nil {
+		return Pick{}, fmt.Errorf("trivia: выбор %d: отвергнутые кандидаты: %w", p.ID, err)
+	}
+	if err := json.Unmarshal([]byte(elig), &p.Eligibility); err != nil {
+		return Pick{}, fmt.Errorf("trivia: выбор %d: итог проверки: %w", p.ID, err)
+	}
+	if err := json.Unmarshal([]byte(weightsRaw), &p.Weights); err != nil {
+		return Pick{}, fmt.Errorf("trivia: выбор %d: веса статусов: %w", p.ID, err)
+	}
+	return p, nil
+}
 
 func (s *SQLite) SavePick(ctx context.Context, p Pick) (int64, error) {
 	if err := storeValidatePick(p); err != nil {
@@ -158,8 +199,7 @@ func (s *SQLite) Picks(ctx context.Context, limit int) ([]Pick, error) {
 	if limit <= 0 {
 		limit = -1
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, species_id, sci_name, iucn, picked_at,
-		attempts, rejected, eligibility, weights FROM trivia_pick
+	rows, err := s.db.QueryContext(ctx, `SELECT `+sqlitePickColumns+` FROM trivia_pick
 		ORDER BY picked_at DESC, id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("trivia: выборы: %w", err)
@@ -167,24 +207,9 @@ func (s *SQLite) Picks(ctx context.Context, limit int) ([]Pick, error) {
 	defer rows.Close()
 	list := []Pick{}
 	for rows.Next() {
-		var (
-			p                          Pick
-			at                         int64
-			rejected, elig, weightsRaw string
-		)
-		if err := rows.Scan(&p.ID, &p.SpeciesID, &p.SciName, &p.IUCN, &at,
-			&p.Attempts, &rejected, &elig, &weightsRaw); err != nil {
-			return nil, fmt.Errorf("trivia: выборы: %w", err)
-		}
-		p.PickedAt = sqliteTime(at)
-		if err := json.Unmarshal([]byte(rejected), &p.Rejected); err != nil {
-			return nil, fmt.Errorf("trivia: выбор %d: отвергнутые кандидаты: %w", p.ID, err)
-		}
-		if err := json.Unmarshal([]byte(elig), &p.Eligibility); err != nil {
-			return nil, fmt.Errorf("trivia: выбор %d: итог проверки: %w", p.ID, err)
-		}
-		if err := json.Unmarshal([]byte(weightsRaw), &p.Weights); err != nil {
-			return nil, fmt.Errorf("trivia: выбор %d: веса статусов: %w", p.ID, err)
+		p, err := sqliteScanPick(rows)
+		if err != nil {
+			return nil, err
 		}
 		list = append(list, p)
 	}
