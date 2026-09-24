@@ -17,6 +17,12 @@
 //
 // stdout занят протоколом, поэтому всё человекочитаемое уходит в stderr:
 // ошибки — всегда, журнал вызовов — с флагом -v.
+//
+// С флагом -http сервер — это демон (планировщик выпусков и сводок), который
+// ещё и открыт по Streamable HTTP: источники, MDD и инструменты демона для
+// нескольких клиентов сразу. Токен — MCP_TOKEN или -token; без него сервер
+// слушает только loopback, наружу не стартует. Проверка живости — GET
+// /healthz.
 package main
 
 import (
@@ -54,7 +60,14 @@ func main() {
 	flag.StringVar(&dc.summaryAt, "summary-at", daemon.DefaultSummaryAt, "время суточной сводки, ЧЧ:ММ")
 	flag.StringVar(&dc.mddAt, "mdd-at", daemon.DefaultMDDAt, "время проверки релиза MDD, ЧЧ:ММ")
 	flag.Float64Var(&dc.budget, "budget", daemon.DefaultBudget, "лимит расходов на модель в сутки, $; отрицательный — без лимита")
+	flag.StringVar(&dc.http, "http", "", "адрес MCP-сервера по HTTP, например 127.0.0.1:8766 (включает режим демона)")
+	flag.StringVar(&dc.token, "token", "", "Bearer-токен HTTP-сервера; обязателен, если адрес не loopback (переменная MCP_TOKEN)")
 	flag.Parse()
+	if dc.token == "" {
+		// Не значением по умолчанию: -h печатает умолчания, и токен ушёл бы
+		// на экран.
+		dc.token = os.Getenv("MCP_TOKEN")
+	}
 
 	level := slog.LevelWarn
 	if *verbose {
@@ -62,8 +75,8 @@ func main() {
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	if dc.on || dc.run != "" {
-		os.Exit(runDaemon(dc, *dataDir, *mddURL, logger))
+	if dc.on || dc.run != "" || dc.http != "" {
+		os.Exit(runDaemon(dc, *dataDir, *mddURL, sources{wiki: *wikiBase, gbif: *gbifBase}, logger))
 	}
 
 	// Кэш источников у сервера свой: это второй кэш рядом с кэшем
