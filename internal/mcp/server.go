@@ -30,8 +30,8 @@ import (
 const ServerName = "animals-sources"
 
 // Version — версия сервера; совпадает с версией продукта, в которой
-// появился механизм.
-const Version = "17.0.0"
+// менялся сервер (18 — HTTP-транспорт и инструменты демона).
+const Version = "18.0.0"
 
 // InfoTool — служебный инструмент сервера: счётчики вызовов и сведения о
 // процессе. Модели не выдаётся, его читают окно «MCP-сервер» и стенд.
@@ -47,6 +47,10 @@ type ServerOptions struct {
 	// считает запросы к источникам. nil — не считать.
 	Fetcher *tools.Fetcher
 	Logger  *slog.Logger
+	// State — краткое состояние процесса-хозяина для server_info (у демона
+	// — задания, лимит и расход за сутки). Сервер не знает, чьё это
+	// состояние: так пакет не тянет за собой демон. nil — поля нет.
+	State func(ctx context.Context) any
 }
 
 // Server — MCP-сервер над инструментами источников. Регистрирует ровно те
@@ -105,12 +109,11 @@ func (s *Server) Run(ctx context.Context, t sdk.Transport) error { return s.sdk.
 func (s *Server) addTool(t tools.Tool) {
 	spec := t.Spec()
 	s.names = append(s.names, spec.Name)
-	open := true
 	s.sdk.AddTool(&sdk.Tool{
 		Name:        spec.Name,
 		Description: spec.Description,
 		InputSchema: tools.Canon(spec.Parameters),
-		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &open},
+		Annotations: annotations(spec),
 	}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 		out, err := t.Call(ctx, req.Params.Arguments)
 		if err != nil {
@@ -120,6 +123,20 @@ func (s *Server) addTool(t tools.Tool) {
 		}
 		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: out}}}, nil
 	})
+}
+
+// annotations — подсказки клиенту по признакам инструмента. Инструмент
+// с Write (run_now, summary_build) меняет состояние и тратит деньги: клиент
+// должен спрашивать подтверждение, а повтор — это второй платный запуск,
+// поэтому он и не идемпотентен. Ничего не удаляет — DestructiveHint явно
+// false: по умолчанию спецификация считает запись разрушительной.
+func annotations(spec tools.Spec) *sdk.ToolAnnotations {
+	open := true
+	if spec.Write {
+		destructive := false
+		return &sdk.ToolAnnotations{DestructiveHint: &destructive, OpenWorldHint: &open}
+	}
+	return &sdk.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &open}
 }
 
 // count — промежуточный слой: счётчик вызовов по инструментам, счётчик
@@ -164,6 +181,7 @@ type Info struct {
 	TotalCalls    int            `json:"total_calls" jsonschema:"всего вызовов инструментов источников"`
 	HTTPRequests  int64          `json:"http_requests" jsonschema:"сколько HTTP-запросов к источникам ушло в сеть (без попаданий в кэш сервера)"`
 	UptimeSeconds int            `json:"uptime_seconds" jsonschema:"сколько секунд работает сервер"`
+	State         any            `json:"state,omitempty" jsonschema:"состояние процесса-хозяина, если сервер работает в демоне: задания, лимит и расход за сутки"`
 }
 
 // SourceInfo — внешний источник для server_info.
@@ -214,6 +232,10 @@ func (s *Server) addInfoTool() {
 			"счётчики вызовов инструментов за жизнь процесса. Аргументов нет.",
 		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true},
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, _ struct{}) (*sdk.CallToolResult, Info, error) {
-		return nil, s.Stats(), nil
+		info := s.Stats()
+		if s.o.State != nil {
+			info.State = s.o.State(ctx)
+		}
+		return nil, info, nil
 	})
 }
