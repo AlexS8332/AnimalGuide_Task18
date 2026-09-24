@@ -79,8 +79,8 @@ func TestSQLiteReopen(t *testing.T) {
 
 	conn = sqliteOpen(t, path)
 	st = sqliteNew(t, conn)
-	if v, err := db.Version(ctx, conn, trivia.SQLiteComponent); err != nil || v != 1 {
-		t.Errorf("версия схемы %d, %v; ждали 1", v, err)
+	if v, err := db.Version(ctx, conn, trivia.SQLiteComponent); err != nil || v != 2 {
+		t.Errorf("версия схемы %d, %v; ждали 2", v, err)
 	}
 	list, err := st.Picks(ctx, 0)
 	if err != nil {

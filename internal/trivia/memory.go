@@ -16,6 +16,12 @@ type Memory struct {
 	nextID int64
 	picks  []Pick // в порядке сохранения, то есть по возрастанию ID
 	checks map[int]Eligibility
+
+	// Выпуски (memory_issue.go): в порядке сохранения, то есть по
+	// возрастанию ID; счётчик свой — ID выпусков и выборов независимы, как
+	// у двух таблиц SQLite.
+	nextIssueID int64
+	issues      []Issue
 }
 
 var _ PickStore = (*Memory)(nil)
