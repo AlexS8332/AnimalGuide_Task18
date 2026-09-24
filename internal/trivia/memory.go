@@ -22,6 +22,10 @@ type Memory struct {
 	// у двух таблиц SQLite.
 	nextIssueID int64
 	issues      []Issue
+
+	// Сводки (memory_summary.go): так же, по возрастанию ID, счётчик свой.
+	nextSummaryID int64
+	summaries     []Summary
 }
 
 var _ PickStore = (*Memory)(nil)
