@@ -68,11 +68,14 @@ type Options struct {
 
 // Conn — сведения о текущем подключении: что сервер сказал о себе.
 type Conn struct {
-	Server   string    `json:"server"`
-	Version  string    `json:"version"`
-	Protocol string    `json:"protocol"`
-	PID      int       `json:"pid,omitempty"`
-	Since    time.Time `json:"since"`
+	Server   string `json:"server"`
+	Version  string `json:"version"`
+	Protocol string `json:"protocol"`
+	PID      int    `json:"pid,omitempty"`
+	// Addr — адрес сервера-демона (HTTPDialer); у процесса пусто. Без
+	// токена: он ходит заголовком.
+	Addr  string    `json:"addr,omitempty"`
+	Since time.Time `json:"since"`
 	// N — номер подключения за жизнь приложения: 1 — первый запуск, дальше
 	// перезапуски.
 	N int `json:"n"`
@@ -222,7 +225,7 @@ func (c *Client) session(ctx context.Context) (*sdk.ClientSession, bool, error) 
 	c.attempts = append(c.attempts, now)
 	c.mu.Unlock()
 
-	sess, cmd, specs, err := c.dial(ctx)
+	sess, cmd, addr, specs, err := c.dial(ctx)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -244,7 +247,7 @@ func (c *Client) session(ctx context.Context) (*sdk.ClientSession, bool, error) 
 	c.adopt(specs)
 	c.n++
 	res := sess.InitializeResult()
-	c.conn = &Conn{Protocol: res.ProtocolVersion, Since: now, N: c.n}
+	c.conn = &Conn{Protocol: res.ProtocolVersion, Since: now, N: c.n, Addr: addr}
 	if res.ServerInfo != nil {
 		c.conn.Server, c.conn.Version = res.ServerInfo.Name, res.ServerInfo.Version
 	}
@@ -252,7 +255,7 @@ func (c *Client) session(ctx context.Context) (*sdk.ClientSession, bool, error) 
 		c.conn.PID = cmd.Process.Pid
 	}
 	c.sess, c.cmd, c.status, c.reason = sess, cmd, StatusReady, ""
-	c.log.Info("mcp: подключён", "server", c.conn.Server, "version", c.conn.Version, "protocol", c.conn.Protocol, "pid", c.conn.PID, "n", c.n)
+	c.log.Info("mcp: подключён", "server", c.conn.Server, "version", c.conn.Version, "protocol", c.conn.Protocol, "pid", c.conn.PID, "addr", c.conn.Addr, "n", c.n)
 	go c.watch(sess)
 	return sess, true, nil
 }
@@ -280,30 +283,35 @@ func (c *Client) deferred() error {
 }
 
 // dial — новое соединение со сверкой набора.
-func (c *Client) dial(ctx context.Context) (*sdk.ClientSession, *exec.Cmd, *remoteSet, error) {
+// Третье значение — адрес сервера, если он не процесс.
+func (c *Client) dial(ctx context.Context) (*sdk.ClientSession, *exec.Cmd, string, *remoteSet, error) {
 	// Соединение живёт дольше хода, который его открыл: отмена хода не
 	// должна рвать процесс сервера.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.o.ConnectTimeout)
 	defer cancel()
 	if c.o.Dial == nil {
-		return nil, nil, nil, errors.New("не задан способ запуска сервера")
+		return nil, nil, "", nil, errors.New("не задан способ запуска сервера")
 	}
 	t, cmd, err := c.o.Dial(ctx)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, "", nil, err
 	}
+	addr := remoteAddr(t)
 	cl := sdk.NewClient(&sdk.Implementation{Name: "animal-guide", Version: Version}, nil)
 	sess, err := cl.Connect(ctx, t, nil)
 	if err != nil {
 		stop(cmd)
-		return nil, nil, nil, fmt.Errorf("initialize: %w", err)
+		if errors.Is(err, ErrUnauthorized) { // без обёрток SDK: человеку важна причина
+			return nil, nil, "", nil, ErrUnauthorized
+		}
+		return nil, nil, "", nil, fmt.Errorf("initialize: %w", err)
 	}
 	var remote []*sdk.Tool
 	for tool, err := range sess.Tools(ctx, nil) {
 		if err != nil {
 			sess.Close()
 			stop(cmd)
-			return nil, nil, nil, fmt.Errorf("tools/list: %w", err)
+			return nil, nil, "", nil, fmt.Errorf("tools/list: %w", err)
 		}
 		remote = append(remote, tool)
 	}
@@ -311,9 +319,9 @@ func (c *Client) dial(ctx context.Context) (*sdk.ClientSession, *exec.Cmd, *remo
 	if err != nil {
 		sess.Close()
 		stop(cmd)
-		return nil, nil, nil, err
+		return nil, nil, "", nil, err
 	}
-	return sess, cmd, set, nil
+	return sess, cmd, addr, set, nil
 }
 
 // remoteSet — сверенный набор инструментов сервера.
