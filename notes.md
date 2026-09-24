@@ -180,3 +180,18 @@ MDD (Mammal Diversity Database, 6904 вида), собирает о нём вы�
   следующем старте.
 - Сводка вживую ($0.0007, 1 запрос): 8 выпусков, два CR-вида, «самое
   интересное» — из Highlight, доля отбраковки 7 %, числа совпали с агрегатом.
+- Этап 6 (MCP по HTTP) — три агента: инструменты демона
+  (`internal/daemon/tools.go`: facts_latest/get/search, summary_get/build,
+  schedule_status, run_now; Write у двух платных), сервер (Streamable HTTP
+  stateless + JSON-ответы, /mcp и /healthz, Bearer-токен MCP_TOKEN, отказ
+  слушать не-loopback без токена, CrossOriginProtection; остановка: сначала
+  HTTP, потом планировщик — начатый run_now не обрывается), клиент
+  (`mcp.HTTPDialer`, переподключение после рестарта демона, `mcp-list -url`,
+  demo-вызовы не трогают платные инструменты).
+- Контракт `daemon.Service`; сводка по запросу (summary_build) пишется в
+  журнал запусков — иначе её расход не видел бы дневной лимит.
+- Живой прогон: `animals-mcp -http 127.0.0.1:8766`, 17 инструментов;
+  schedule_status («потрачено $0.0124 из $0.50»), facts_get по русскому
+  названию, facts_search, run_now issue → «Филиппинский замбар: 5 фактов»,
+  $0.0011, 4,7 с; без токена — 401 с понятной ошибкой.
+- `time/tzdata` в animals-mcp: на Windows без базы зон LoadLocation падал бы.

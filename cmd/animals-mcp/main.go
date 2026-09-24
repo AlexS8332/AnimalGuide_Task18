@@ -35,6 +35,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"time"
+	_ "time/tzdata" // пояса для Daily и лимита суток: на Windows базы зон может не быть
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 

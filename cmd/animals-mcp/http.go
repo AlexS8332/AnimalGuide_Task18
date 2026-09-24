@@ -10,15 +10,12 @@ import (
 	"time"
 
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/daemon"
-	"github.com/AlexS8332/AnimalGuide_Task18/internal/tools"
 )
 
 // daemonTools — инструменты демона для HTTP-сервера (facts_*, summary_*,
-// schedule_status, run_now). Пакет с ними пишется параллельно; пока их
-// нет, сервер отдаёт источники и MDD.
-//
-// TODO после слияния: var daemonTools = daemon.Tools
-var daemonTools = func(daemon.Service) []tools.Tool { return nil }
+// schedule_status, run_now). Переменная, а не прямой вызов: тест
+// подменяет её фейковыми инструментами.
+var daemonTools = daemon.Tools
 
 // checkListen проверяет адрес HTTP-сервера. Наружу без токена слушать
 // нельзя: run_now и summary_build тратят деньги на модель, а без токена их
