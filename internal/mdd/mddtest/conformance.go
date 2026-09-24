@@ -324,6 +324,20 @@ func Conformance(t *testing.T, newStore func(t *testing.T) mdd.Store) {
 		}
 	})
 
+	t.Run("ReplaceEmpty", func(t *testing.T) {
+		st, _ := loaded(t)
+		empty := Sample()
+		empty.Species = nil
+		for _, d := range []*mdd.Dataset{nil, empty} {
+			if err := st.Replace(ctx, d); err == nil {
+				t.Errorf("Replace пустого набора прошёл без ошибки")
+			}
+		}
+		if _, err := st.Get(ctx, Manul); err != nil {
+			t.Errorf("после отвергнутого Replace справочник пропал: %v", err)
+		}
+	})
+
 	t.Run("ReplaceCopies", func(t *testing.T) {
 		st := newStore(t)
 		d := Sample()

@@ -65,7 +65,8 @@ func TestRealServerOverStdio(t *testing.T) {
 
 	logs := &syncBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, nil))
-	l := &Launcher{Args: []string{"-wiki-base", wiki.URL, "-gbif-base", slowGBIF.URL, "-v"}, Logger: logger}
+	l := &Launcher{Args: []string{"-wiki-base", wiki.URL, "-gbif-base", slowGBIF.URL, "-v",
+		"-data", t.TempDir(), "-mdd-sync=false"}, Logger: logger}
 	defer l.Close()
 	local := tools.LocalTools(tools.NewFetcher(), wiki.URL, slowGBIF.URL)
 	c := NewClient(Options{Dial: l.Dial, Want: tools.Fingerprint(local), Logger: logger})

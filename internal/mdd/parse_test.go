@@ -150,7 +150,7 @@ func TestParseMini(t *testing.T) {
 	if u := loaderSpecies(t, d, "Panthera uncia"); u.IUCN != "VU" || len(u.CountriesUncertain) != 0 || u.Extinct || u.Domestic {
 		t.Errorf("ирбис: %+v", u)
 	}
-	if c := loaderSpecies(t, d, "Felis catus"); !c.Domestic || c.Extinct || c.Authority != "Linnaeus, 1758" || c.Realms != nil {
+	if c := loaderSpecies(t, d, "Felis catus"); !c.Domestic || c.Extinct || c.Authority != "Linnaeus, 1758" || c.Realms != nil || c.Countries != nil {
 		t.Errorf("кошка: %+v", c)
 	}
 	if th := loaderSpecies(t, d, "Thylacinus cynocephalus"); !th.Extinct || th.IUCN != "EX" {

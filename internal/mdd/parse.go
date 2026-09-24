@@ -417,9 +417,14 @@ func splitList(s string) []string {
 
 // splitCountries делит страны на достоверные и сомнительные: «Azerbaijan?»
 // в MDD значит «возможно, есть», и знак снимается, чтобы по стране можно
-// было искать точным именем.
+// было искать точным именем. «Domesticated» у домашних видов — не страна,
+// а пометка: её несёт флаг Domestic, в списке стран она только мешала бы
+// поиску и сводкам по странам.
 func splitCountries(s string) (sure, uncertain []string) {
 	for _, c := range splitList(s) {
+		if strings.EqualFold(c, "Domesticated") {
+			continue
+		}
 		if strings.Contains(c, "?") {
 			if c = strings.TrimSpace(strings.ReplaceAll(c, "?", "")); c != "" {
 				uncertain = append(uncertain, c)

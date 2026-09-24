@@ -34,3 +34,4 @@ __debug_bin*
 /collections/
 /invariants/
 server.*.log
+/trivia.db*

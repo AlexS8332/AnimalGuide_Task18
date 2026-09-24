@@ -52,18 +52,21 @@ type Species struct {
 	Genus     string `json:"genus"`
 	Epithet   string `json:"epithet"` // specificEpithet
 
-	// Authority — «G. K. Shaw, 1799»; скобки, если authorityParentheses=1:
-	// «(Pallas, 1776)».
+	// Authority — «Linnaeus, 1758»; в скобках, если authorityParentheses=1
+	// (вид описан в другом роде): «(Pallas, 1776)».
 	Authority string `json:"authority,omitempty"`
 	Year      int    `json:"year,omitempty"`
 
-	// IUCN — статус МСОП как в CSV: LC, NT, VU, EN, CR, EW, EX, DD, NE.
+	// IUCN — код статуса МСОП: LC, NT, VU, EN, CR, EW, EX, DD, NE. В CSV
+	// бывает «NT (as Bison bison)» — оценка под другим именем; пояснение
+	// отбрасывается, иначе фильтр по статусу таких видов не находит.
 	IUCN     string `json:"iucn,omitempty"`
 	Extinct  bool   `json:"extinct"`  // extinct = 1
 	Domestic bool   `json:"domestic"` // domestic = 1
 
 	// Countries — страны, где вид точно есть; CountriesUncertain — страны
-	// со знаком «?» в countryDistribution (знак снимается).
+	// со знаком «?» в countryDistribution (знак снимается). Пометка
+	// «Domesticated» у домашних видов страной не считается и отбрасывается.
 	Countries          []string `json:"countries,omitempty"`
 	CountriesUncertain []string `json:"countries_uncertain,omitempty"`
 	Continents         []string `json:"continents,omitempty"` // continentDistribution
@@ -133,17 +136,25 @@ type Store interface {
 	// Release — текущий загруженный релиз; ErrNotFound, если базы ещё нет.
 	Release(ctx context.Context) (Release, error)
 	// Replace заменяет набор данных целиком одной транзакцией: читатели
-	// видят либо старый релиз, либо новый.
+	// видят либо старый релиз, либо новый. Пустой набор (nil или без видов)
+	// — ошибка: сломанный разбор не должен стереть справочник.
+	// Release.Species ставит сам Replace (число видов), пустой LoadedAt —
+	// текущим временем.
 	Replace(ctx context.Context, d *Dataset) error
 	// Get — вид по mdd-id; ErrNotFound, если нет.
 	Get(ctx context.Context, id int) (Species, error)
 	// Find — вид по точному названию: латинскому (пробел или «_»), основному
-	// или прочему английскому; без учёта регистра. ErrNotFound, если нет.
+	// или прочему английскому; без учёта регистра и пробелов по краям.
+	// Прочие английские названия бывают общими у нескольких видов: тогда
+	// латинское важнее основного, основное — прочего, а при равенстве
+	// выигрывает первый в систематическом порядке. ErrNotFound, если нет.
 	Find(ctx context.Context, name string) (Species, error)
 	// Search — поиск; total — сколько всего подходит без Limit/Offset.
+	// Limit 0 → 20 и предел 100 применяет само хранилище.
 	// Порядок — phylosort (систематический порядок MDD), затем id.
 	Search(ctx context.Context, q Query) (list []Species, total int, err error)
-	// Changes — изменения текущего релиза; category пусто — все.
+	// Changes — изменения текущего релиза в порядке Diff-файла; category
+	// без учёта регистра, пусто — все; limit ≤ 0 — без ограничения.
 	Changes(ctx context.Context, category string, limit int) ([]Change, error)
 	// IDs — mdd-id всех видов: из них планировщик выбирает случайный.
 	IDs(ctx context.Context) ([]int, error)

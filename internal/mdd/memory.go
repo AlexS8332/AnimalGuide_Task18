@@ -42,7 +42,9 @@ func (m *Memory) Release(ctx context.Context) (Release, error) {
 }
 
 func (m *Memory) Replace(ctx context.Context, d *Dataset) error {
-	if d == nil {
+	// Пустой набор — почти наверняка сломанный разбор архива: он не должен
+	// стереть рабочий справочник. Так же ведёт себя SQLite.
+	if d == nil || len(d.Species) == 0 {
 		return errors.New("mdd: пустой набор данных")
 	}
 	species := make([]Species, len(d.Species))

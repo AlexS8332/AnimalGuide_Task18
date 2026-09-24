@@ -136,7 +136,6 @@ func Sample() *mdd.Dataset {
 			Order:            "Carnivora", Family: "Felidae", Subfamily: "Felinae",
 			Genus: "Felis", Epithet: "catus",
 			Authority: "Linnaeus, 1758", Year: 1758, IUCN: "NE", Domestic: true,
-			Countries:     []string{"Domesticated"},
 			TypeLocality:  "Sweden.",
 			TaxonomyNotes: "domestic form of F. lybica",
 		},
