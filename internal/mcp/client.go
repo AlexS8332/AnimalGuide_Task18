@@ -68,17 +68,17 @@ type Options struct {
 
 // Conn — сведения о текущем подключении: что сервер сказал о себе.
 type Conn struct {
-	Server   string `json:"server"`
-	Version  string `json:"version"`
-	Protocol string `json:"protocol"`
-	PID      int    `json:"pid,omitempty"`
-	// Addr — адрес сервера-демона (HTTPDialer); у процесса пусто. Без
-	// токена: он ходит заголовком.
-	Addr  string    `json:"addr,omitempty"`
-	Since time.Time `json:"since"`
+	Server   string    `json:"server"`
+	Version  string    `json:"version"`
+	Protocol string    `json:"protocol"`
+	PID      int       `json:"pid,omitempty"`
+	Since    time.Time `json:"since"`
 	// N — номер подключения за жизнь приложения: 1 — первый запуск, дальше
 	// перезапуски.
 	N int `json:"n"`
+	// Addr — адрес сервера-демона (HTTPDialer); у процесса пусто. Без
+	// токена: он ходит заголовком.
+	Addr string `json:"addr,omitempty"`
 }
 
 // ToolInfo — инструмент, как его описал сервер, и счётчики вызовов с
