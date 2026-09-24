@@ -1,0 +1,14 @@
+{
+  "num": "18",
+  "slug": "animal-guide-facts",
+  "title": "AnimalGuide: интересные факты по расписанию — MCP-демон, MDD + GBIF, SQLite (DeepSeek, Go + браузер)",
+  "stack": "go",
+  "status": "planned",
+  "created": "2026-09-24",
+  "updated": "2026-09-24",
+  "repo": "",
+  "env": [
+    "DEEPSEEK_API_KEY"
+  ],
+  "tags": []
+}
