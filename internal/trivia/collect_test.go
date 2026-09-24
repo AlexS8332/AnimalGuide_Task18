@@ -163,7 +163,9 @@ func TestCollectRuArticle(t *testing.T) {
 	if d.NameRu != "Манул" {
 		t.Errorf("NameRu = %q, ждали «Манул» (уточнение в скобках снимается)", d.NameRu)
 	}
-	if !d.CollectedAt.Equal(collectNow) || d.Took <= 0 || d.Pick.SpeciesID != sp.ID || d.Species.SciName != sp.SciName {
+	// Took может быть 0: на Windows быстрая сборка на подставных серверах
+	// укладывается в один тик часов.
+	if !d.CollectedAt.Equal(collectNow) || d.Took < 0 || d.Pick.SpeciesID != sp.ID || d.Species.SciName != sp.SciName {
 		t.Errorf("служебные поля досье: %+v", d)
 	}
 
