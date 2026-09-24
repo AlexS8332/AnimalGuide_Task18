@@ -17,6 +17,7 @@ package mdd
 import (
 	"context"
 	"errors"
+	"strconv"
 	"time"
 )
 
@@ -35,6 +36,8 @@ var ErrNotFound = errors.New("mdd: не найдено")
 type Species struct {
 	// ID — mdd-id, устойчивый между релизами (колонка id).
 	ID int `json:"id"`
+	// Phylosort — систематический порядок MDD (колонка phylosort).
+	Phylosort int `json:"-"`
 	// SciName — латинское название через пробел: «Otocolobus manul»
 	// (в CSV — через подчёркивание, колонка sciName).
 	SciName string `json:"sci_name"`
@@ -72,7 +75,7 @@ type Species struct {
 }
 
 // URL — страница вида на сайте MDD.
-func (s Species) URL() string { return SiteBase + "/taxon/" + itoa(s.ID) + "/" }
+func (s Species) URL() string { return SiteBase + "/taxon/" + strconv.Itoa(s.ID) + "/" }
 
 // Release — релиз набора данных (release.toml + сведения о загрузке).
 type Release struct {
@@ -144,26 +147,4 @@ type Store interface {
 	Changes(ctx context.Context, category string, limit int) ([]Change, error)
 	// IDs — mdd-id всех видов: из них планировщик выбирает случайный.
 	IDs(ctx context.Context) ([]int, error)
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		b[i] = '-'
-	}
-	return string(b[i:])
 }
