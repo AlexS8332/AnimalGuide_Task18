@@ -22,6 +22,7 @@ import (
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/agent"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/charter"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/features"
+	"github.com/AlexS8332/AnimalGuide_Task18/internal/feed"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/history"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/invariants"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/llm"
@@ -57,6 +58,23 @@ type options struct {
 	// report — опыт -report вместо сервера: испытания и отчёт в markdown.
 	report            bool
 	trials, reportOut string
+	// factsServer — адрес демона «Интересных фактов»; factsSet — задан ли
+	// он флагом явно (тогда и пустая строка — «выключено»).
+	factsServer string
+	factsSet    bool
+}
+
+// facts — адрес демона фактов: флаг, иначе TRIVIA_SERVER, иначе адрес по
+// умолчанию. Окружение читается здесь, а не в умолчании флага: .env-файлы
+// подхватываются уже после разбора флагов.
+func (o options) facts() string {
+	if o.factsSet {
+		return o.factsServer
+	}
+	if v := strings.TrimSpace(os.Getenv("TRIVIA_SERVER")); v != "" {
+		return v
+	}
+	return feed.DefaultServer
 }
 
 func parseFlags() options {
@@ -73,7 +91,13 @@ func parseFlags() options {
 	flag.BoolVar(&o.report, "report", false, "прогнать испытания на живой модели и записать отчёт вместо запуска сервера")
 	flag.StringVar(&o.trials, "trials", "all", "какие испытания гонять с -report: «all», «1,6», «И-2»")
 	flag.StringVar(&o.reportOut, "report-out", filepath.Join("examples", "report.md"), "куда записать отчёт -report")
+	flag.StringVar(&o.factsServer, "facts-server", feed.DefaultServer, "адрес демона «Интересных фактов» (animals-mcp -http, механизм trivia и раздел интерфейса); по умолчанию TRIVIA_SERVER, иначе этот; пусто — выключить. Токен — MCP_TOKEN")
 	flag.Parse()
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "facts-server" {
+			o.factsSet = true
+		}
+	})
 	return o
 }
 
@@ -138,6 +162,7 @@ func main() {
 	exts := append(people.Extension(), compile.Extension(manager)...)
 	exts = append(exts, guide.Extension()...)
 	exts = append(exts, a.Sources.Extension()...)
+	exts = append(exts, a.Feed.Extension()...)
 	handler := server.New(manager, static, meta, exts...)
 
 	listener, err := net.Listen("tcp", o.addr)
@@ -154,6 +179,7 @@ func main() {
 	fmt.Printf("  диалоги:    %s (загружено: %d)\n", manager.DisplayDir(), loaded)
 	fmt.Println("  свод:       " + guide.Store.DisplayPath(invariants.GuideID))
 	fmt.Println("  механизмы:  " + defaults.String())
+	fmt.Println("  факты:      " + factsLine(a.Feed.Remote))
 	if defaults.On(features.MCP) {
 		fmt.Println("  MCP:        включён для новых диалогов; сервер запустится при первом ходе")
 	}
@@ -180,6 +206,33 @@ func main() {
 	srv.Shutdown(ctx)
 	a.Close()
 	fmt.Println("Остановлено. Диалоги остались в " + manager.DisplayDir())
+}
+
+// factsLine — строка о демоне фактов для стартового вывода. Проверка
+// короткая: старт не ждёт демон дольше двух секунд, а приложение работает
+// и без него.
+func factsLine(r *feed.Remote) string {
+	if !r.Configured() {
+		return "выключены (-facts-server \"\")"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	st := r.Status(ctx)
+	switch st.Conn {
+	case feed.ConnOK:
+		line := r.Server() + " (подключён"
+		if st.Version != "" {
+			line += ", версия " + st.Version
+		}
+		return line + ")"
+	case feed.ConnDenied:
+		return r.Server() + " (отверг токен — " + st.Hint + ")"
+	}
+	why := "не отвечает — " + st.Hint
+	if ctx.Err() != nil {
+		why = "не ответил за 2 с — " + st.Hint
+	}
+	return r.Server() + " (" + why + ")"
 }
 
 func fail(err error) {

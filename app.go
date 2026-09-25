@@ -11,6 +11,7 @@ import (
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/compiler"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/extract"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/features"
+	"github.com/AlexS8332/AnimalGuide_Task18/internal/feed"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/history"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/invariants"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/mcp"
@@ -34,7 +35,11 @@ type app struct {
 	Fetcher *tools.Fetcher
 	// Sources — путь до источников на ход: в процессе или через MCP-сервер.
 	Sources *mcp.Switch
-	// Close гасит клиент и процесс MCP-сервера, если он запускался.
+	// Feed — «Интересные факты»: клиент к демону, механизм trivia и REST
+	// раздела. Демона может не быть — сборка от этого не зависит.
+	Feed *feed.Hook
+	// Close гасит клиент и процесс MCP-сервера, если он запускался, и
+	// соединение с демоном фактов.
 	Close func()
 }
 
@@ -74,6 +79,10 @@ func wire(o options, registry *features.Registry, defaults features.Set, runner 
 		return app{}, fmt.Errorf("свод справочника: %w", err)
 	}
 	guide := &charter.Hook{Store: rules, Judge: invariants.Judge{LLM: runner.LLM, Model: runner.Model}}
+	// Демон фактов — отдельный процесс; клиент подключается при первом
+	// обращении, так что сборка (и стенд, где механизм выключен) демон не
+	// трогает.
+	trivia := &feed.Hook{Remote: feed.NewRemote(o.facts(), os.Getenv("MCP_TOKEN"), nil)}
 	manager := runs.NewManager(runs.Config{
 		Agents:   deps,
 		Store:    history.NewStore(data),
@@ -82,8 +91,12 @@ func wire(o options, registry *features.Registry, defaults features.Set, runner 
 		// Составитель первым: его ход видит блоки свода, профиля и памяти.
 		// Страж свода — раньше человека: соблюдение профиля проверяется по
 		// тому ответу, который дойдёт до человека.
-		Hooks: []runs.Hook{compile, guide, people},
+		// Факты последними: ведущий и составитель читают инструменты хода
+		// уже после всех хуков, так что место на выдачу не влияет, а в
+		// журнале заметка о демоне встаёт после событий памяти и профиля.
+		Hooks: []runs.Hook{compile, guide, people, trivia},
 	})
 	return app{Manager: manager, People: people, Compile: compile, Guide: guide, Local: local, Fetcher: fetcher,
-		Sources: sources, Close: func() { client.Close(); launcher.Close() }}, nil
+		Sources: sources, Feed: trivia,
+		Close: func() { client.Close(); launcher.Close(); trivia.Remote.Close() }}, nil
 }
