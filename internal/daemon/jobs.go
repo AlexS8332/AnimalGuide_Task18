@@ -65,6 +65,10 @@ type IssueDeps struct {
 	// Collector — сборщик досье поверх Fetcher; nil → WebCollector.
 	Collector func(*tools.Fetcher) trivia.Collector
 	Log       *slog.Logger // nil — без журнала
+	// Now — часы выбора, проверки, досье и выпуска; nil — time.Now. Демон
+	// передаёт часы планировщика: на подставных часах испытания выпуск
+	// обязан жить в том же времени, что журнал запусков и сводка.
+	Now func() time.Time
 }
 
 // IssueJob — выпуск фактов каждые every.
@@ -109,16 +113,20 @@ func runIssue(ctx context.Context, d IssueDeps) (schedule.Outcome, error) {
 	if d.Checker != nil {
 		checker = d.Checker(f)
 	} else {
-		checker = trivia.NewWebChecker(f)
+		wc := trivia.NewWebChecker(f)
+		wc.Now = d.Now
+		checker = wc
 	}
 	var collector trivia.Collector
 	if d.Collector != nil {
 		collector = d.Collector(f)
 	} else {
-		collector = trivia.NewWebCollector(f)
+		wc := trivia.NewWebCollector(f)
+		wc.Now = d.Now
+		collector = wc
 	}
 
-	picker := &trivia.Picker{Species: d.Species, Checker: checker, Store: d.Picks, Options: d.Options}
+	picker := &trivia.Picker{Species: d.Species, Checker: checker, Store: d.Picks, Options: d.Options, Now: d.Now}
 	p, err := picker.Pick(ctx)
 	if err != nil {
 		if errors.Is(err, mdd.ErrNotFound) && ctx.Err() == nil {
@@ -138,9 +146,10 @@ func runIssue(ctx context.Context, d IssueDeps) (schedule.Outcome, error) {
 
 	b := &trivia.Builder{
 		Collector: collector,
-		Editor:    trivia.LLMEditor{LLM: d.LLM, Model: d.Model},
-		Verifier:  trivia.LLMVerifier{LLM: d.LLM, Model: d.Model},
+		Editor:    trivia.LLMEditor{LLM: d.LLM, Model: d.Model, Now: d.Now},
+		Verifier:  trivia.LLMVerifier{LLM: d.LLM, Model: d.Model, Now: d.Now},
 		Store:     d.Issues,
+		Now:       d.Now,
 	}
 	is, buildErr := b.Build(ctx, p, sp)
 	if buildErr != nil && ctx.Err() != nil && is.ID == 0 && is.SciName == "" {

@@ -409,7 +409,7 @@ func (s *Scheduler) start(ctx context.Context, j *job, trigger string, slot time
 		}
 		if spent >= s.budget {
 			r.Status, r.Finished = RunBudget, now
-			r.Detail = fmt.Sprintf("потрачено $%.2f из $%.2f", spent, s.budget)
+			r.Detail = fmt.Sprintf("потрачено $%.4f из $%.4g", spent, s.budget)
 			return s.save(ctx, r), false, nil
 		}
 	}

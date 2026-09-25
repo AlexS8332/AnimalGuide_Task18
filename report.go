@@ -40,7 +40,7 @@ func runReport(o options, registry *features.Registry, defaults features.Set, ru
 	root := filepath.Join(o.data, "bench", time.Now().Format("20060102-150405"))
 	env := &bench.Env{
 		Registry: registry, Base: defaults, Root: root, Legacy: legacyDir, Model: model,
-		Timeout: turnTimeout, Progress: os.Stdout,
+		Timeout: turnTimeout, Progress: os.Stdout, LLM: runner.LLM,
 		Judge: charterJudge{invariants.Judge{LLM: runner.LLM, Model: model}},
 		Open: func(dir string, bo bench.Options) (bench.Build, error) {
 			a, err := wire(o, registry, defaults, runner, dir, bo.WikiBase)

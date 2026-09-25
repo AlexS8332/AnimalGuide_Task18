@@ -116,7 +116,7 @@ func Open(ctx context.Context, c Config) (*Daemon, error) {
 		Now:        c.Clock.Now,
 	}
 	jobs := []schedule.Job{
-		IssueJob(IssueDeps{Species: d.MDD, Picks: d.Trivia, Issues: d.Trivia, LLM: c.LLM, Model: c.Model, Log: log}, c.Every),
+		IssueJob(IssueDeps{Species: d.MDD, Picks: d.Trivia, Issues: d.Trivia, LLM: c.LLM, Model: c.Model, Log: log, Now: c.Clock.Now}, c.Every),
 		MDDJob(d.MDD, mdd.SyncOptions{URL: c.MDDURL}, c.MDDAt),
 		SummaryJob(d.Summary, c.SummaryAt),
 	}

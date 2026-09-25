@@ -398,7 +398,7 @@ func TestBudget(t *testing.T) {
 	ev = h.eventsByJob(2)
 	b := ev["issue"]
 	checkRun(t, b, schedule.TriggerSchedule, schedule.RunBudget, start.Add(2*time.Hour))
-	if b.Detail != "потрачено $0.60 из $0.50" || b.ID <= 0 {
+	if b.Detail != "потрачено $0.6000 из $0.5" || b.ID <= 0 {
 		t.Errorf("пропуск по лимиту: %+v", b)
 	}
 	checkRun(t, ev["ping"], schedule.TriggerSchedule, schedule.RunOK, start.Add(2*time.Hour))

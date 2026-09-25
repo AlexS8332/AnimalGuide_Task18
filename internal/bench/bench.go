@@ -30,6 +30,7 @@ import (
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/collection"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/features"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/history"
+	"github.com/AlexS8332/AnimalGuide_Task18/internal/llm"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/mcp"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/profile"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/runs"
@@ -167,6 +168,9 @@ type Env struct {
 	Judge Judge
 	// Progress — куда писать ход прогона; nil — никуда.
 	Progress io.Writer
+	// LLM — клиент модели для испытаний, которые собирают не приложение, а
+	// демон (И-8); nil — такие испытания не идут.
+	LLM llm.Chatter
 }
 
 func (e *Env) timeout() time.Duration {
