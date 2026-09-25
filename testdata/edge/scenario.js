@@ -344,6 +344,217 @@
     });
   };
 
+  /* «Интересные факты»: подставной демон (edgeFacts в edge_test.go) —
+     подключён, лента из трёх выпусков (один с разметкой в текстах), две
+     сводки; поиск «ошибка» отвечает 422. */
+  const factsCalls = [];
+  function spyFetch() {
+    const orig = window.fetch;
+    window.fetch = (url, opts) => {
+      factsCalls.push({ url: String(url), method: (opts && opts.method) || 'GET', body: opts && opts.body });
+      return orig(url, opts);
+    };
+  }
+  const factsBody = () => text('#facts-body');
+  async function openFacts() {
+    await until('кнопка раздела на пульте', () => q('#facts-button'), 8000);
+    click('#facts-button');
+    await until('окно фактов', () => windowOpen() && q('#facts-root') && $('window-title').textContent === 'Интересные факты', 8000);
+  }
+
+  scenarios.facts = async () => {
+    spyFetch();
+    await booted();
+    let asked = '';
+    window.confirm = msg => { asked = msg; return true; };
+
+    await check('факты: кнопка на пульте с состоянием демона', async () => {
+      const b = await until('кнопка', () => q('#facts-button'));
+      assert(b.closest('#pult'), 'кнопка не на пульте');
+      await until('точка «подключён»', () => q('#facts-button .facts-dot.ok'));
+      assert(b.title.includes('подключён'), 'подсказка: ' + b.title);
+    });
+
+    await check('факты: окно и строка состояния', async () => {
+      await openFacts();
+      const s = text('#facts-status');
+      assert(s.includes('демон подключён'), 'нет «подключён»: ' + s);
+      assert(s.includes('через 35 мин'), 'нет следующего выпуска: ' + s);
+      assert(s.includes('осталось $0.4877'), 'нет остатка бюджета: ' + s);
+      assert(app.facts.timer, 'опрос статуса не запущен');
+    });
+
+    await check('факты: лента карточками', () => {
+      const cards = qa('#facts-body .facts-card');
+      assert(cards.length === 3, 'карточек ' + cards.length);
+      const c = cards[0];
+      assert(text('#facts-body .facts-card h3') === 'Манул: кошка с круглыми зрачками', 'заголовок: ' + text('#facts-body .facts-card h3'));
+      assert(c.querySelector('.facts-species').textContent.includes('Манул') && c.querySelector('.latin').textContent === 'Otocolobus manul', 'вид');
+      assert(c.textContent.includes('МСОП: LC'), 'нет статуса МСОП');
+      assert(c.querySelector('.facts-lead').textContent.includes('холодных степях'), 'нет вступления');
+      assert(c.querySelectorAll('.facts-facts li').length === 3, 'фактов не три');
+      assert(c.querySelector('.facts-meta').textContent.includes('$0.0021'), 'нет цены');
+      assert(cards[1].classList.contains('facts-thin') && cards[1].textContent.includes('мало фактов'), 'тонкий выпуск не помечен');
+    });
+
+    await check('факты: номера источников это ссылки в новом окне', () => {
+      const links = qa('#facts-body .facts-card:first-child a.facts-src');
+      assert(links.length === 3, 'ссылок ' + links.length);
+      assert(links.every(a => a.target === '_blank' && a.rel.includes('noopener') && /^https:/.test(a.href)), 'ссылка без _blank/noopener/https');
+      assert(links[0].textContent === 'S1' && links[0].href.includes('mammaldiversity'), 'первая ссылка: ' + links[0].outerHTML);
+      assert(!q('#facts-root a[href^="javascript"]'), 'javascript: стал ссылкой');
+      assert(qa('#facts-body .facts-src.none').some(s => s.textContent === 'S3'), 'источник без годной ссылки не показан номером');
+    });
+
+    await check('факты: вне ареала MDD с пояснением', () => {
+      const r = text('#facts-body .facts-card:first-child .facts-range');
+      assert(r.includes('вне ареала MDD: Germany, Japan'), 'отметка: ' + r);
+      assert(r.includes('зоопарки') && r.includes('интродукция'), 'нет пояснения: ' + r);
+    });
+
+    await check('факты: разметка из ответов показана буквами', () => {
+      assert(!q('#facts-root img') && !q('#facts-root script') && !q('#facts-root b') && !q('#facts-root i'), 'в окне появился элемент из текста выпуска');
+      assert(window.__xss === undefined, 'выполнился код из выпуска: ' + window.__xss);
+      const hedgehog = qa('#facts-body .facts-card')[1];
+      assert(hedgehog.textContent.includes('<img src=x onerror='), 'текст факта не виден буквами');
+      assert(hedgehog.querySelector('h3').textContent.startsWith('<script>'), 'заголовок: ' + hedgehog.querySelector('h3').textContent);
+    });
+
+    await check('факты: клик по карточке открывает подробности', async () => {
+      click('#facts-body .facts-card[data-issue="3"] .facts-lead');
+      await until('подробности', () => q('#facts-body .facts-card.full') && q('#facts-body .facts-spend'));
+      const b = factsBody();
+      assert(b.includes('Манул — предок домашней кошки') && b.includes('причина: источник этого не говорит'), 'нет отброшенного факта с причиной');
+      assert(b.includes('1 532') && b.includes('88'), 'нет наблюдений: ' + b.slice(0, 200));
+      assert(q('#facts-body tr.facts-out'), 'страна вне ареала не выделена');
+      assert(qa('#facts-body .facts-spend tr').length === 4 && b.includes('редактор') && b.includes('проверяющий'), 'нет расхода по шагам');
+      assert(factsCalls.some(c => c.url.endsWith('/api/facts/issue?id=3')), 'не спросили /issue?id=3');
+      click('#facts-back');
+      await until('назад к ленте', () => qa('#facts-body .facts-card').length === 3);
+    });
+
+    await check('факты: клик по источнику не открывает подробности', async () => {
+      const a = q('#facts-body .facts-card:first-child a.facts-src');
+      a.addEventListener('click', e => e.preventDefault(), { once: true }); // не открывать вкладку в тесте
+      const before = factsCalls.length;
+      a.click();
+      await sleep(200);
+      assert(!q('#facts-body .facts-card.full'), 'открылись подробности');
+      assert(!factsCalls.slice(before).some(c => c.url.includes('/issue')), 'ушёл запрос выпуска');
+    });
+
+    await check('факты: поиск над лентой', async () => {
+      $('facts-query').value = 'манул';
+      click('#facts-search button[type="submit"]');
+      await until('выдача', () => q('#facts-body table.facts-found'));
+      const rows = qa('#facts-body tr.facts-row');
+      assert(rows.length === 1 && rows[0].textContent.includes('Otocolobus manul'), 'строк ' + rows.length);
+      assert(factsCalls.some(c => c.url.includes('/api/facts/search?text=' + encodeURIComponent('манул'))), 'не ушёл /search');
+      click(rows[0]);
+      await until('выпуск из поиска', () => q('#facts-body .facts-card.full'));
+      assert(text('#facts-back').includes('к поиску'), 'кнопка назад: ' + text('#facts-back'));
+      click('#facts-back');
+      await until('снова выдача', () => q('#facts-body table.facts-found'));
+    });
+
+    await check('факты: 422 на поиске показан текстом ошибки', async () => {
+      $('facts-query').value = 'ошибка';
+      click('#facts-search button[type="submit"]');
+      await until('ошибка', () => q('#facts-body .facts-error'));
+      assert(text('#facts-body .facts-error').includes('since: ожидалась дата'), 'текст: ' + text('#facts-body .facts-error'));
+      assert(!q('#facts-body .facts-down'), '422 показан как «демон не подключён»');
+      click('#facts-body [data-action="factsSearchReset"]');
+      await until('лента', () => qa('#facts-body .facts-card').length === 3);
+    });
+
+    await check('факты: сводки: последняя, цифры, прошлые', async () => {
+      click('#facts-tab-summaries');
+      await until('сводка', () => q('#facts-summary'));
+      const s = text('#facts-summary');
+      assert(s.includes('Сводка №2') && s.includes('три выпуска'), 'нет текста сводки: ' + s.slice(0, 120));
+      const figs = qa('#facts-summary .facts-fig').map(f => f.textContent.replace(/\s+/g, ' '));
+      assert(figs.some(f => f.includes('3') && f.includes('выпусков')), 'нет числа выпусков: ' + figs);
+      assert(figs.some(f => f.includes('отброшено 2 (29%)')), 'нет отбраковки: ' + figs);
+      assert(figs.some(f => f.includes('$0.0081')), 'нет расхода: ' + figs);
+      assert(s.includes('Carnivora') && s.includes('GBIF не ответил'), 'нет отрядов или сбоев');
+      const rows = qa('#facts-body .facts-sum-row');
+      assert(rows.length === 2, 'прошлых сводок ' + rows.length);
+      click(rows[1]);
+      await until('сводка №1', () => text('#facts-summary h3').includes('Сводка №1'));
+      assert(q('#facts-body .facts-sum-row.current[data-arg="1"]'), 'открытая не отмечена');
+    });
+
+    await check('факты: «Собрать выпуск»: подтверждение, ожидание, POST, лента', async () => {
+      click('#facts-tab-feed');
+      await until('лента', () => qa('#facts-body .facts-card').length === 3);
+      click('#facts-run-issue');
+      assert(asked.includes('$0.002'), 'подтверждение без цены: ' + asked);
+      await until('ожидание', () => q('#facts-wait .thinking'));
+      assert($('facts-run-issue').disabled && $('facts-run-summary').disabled, 'кнопки не заблокированы');
+      $('facts-run-issue').click(); // повторное нажатие — мимо
+      await until('итог', () => q('#facts-result'), 8000);
+      const posts = factsCalls.filter(c => c.method === 'POST' && c.url.endsWith('/api/facts/run'));
+      assert(posts.length === 1, 'POST /run ушло ' + posts.length);
+      assert(JSON.parse(posts[0].body).job === 'issue', 'тело: ' + posts[0].body);
+      assert(text('#facts-result').includes('готово') && text('#facts-result').includes('Горный тапир'), 'итог: ' + text('#facts-result'));
+      await until('лента обновилась', () => qa('#facts-body .facts-card').length === 4);
+      assert(text('#facts-body .facts-card h3').includes('Горный тапир'), 'новый выпуск не первым');
+      assert(!$('facts-run-issue').disabled, 'кнопка осталась выключенной');
+    });
+
+    await check('факты: «Собрать сводку»: POST с hours=24 и новая сводка', async () => {
+      asked = '';
+      click('#facts-run-summary');
+      assert(asked.includes('$0.002'), 'нет подтверждения');
+      await until('итог', () => q('#facts-result'), 8000);
+      const post = factsCalls.find(c => c.method === 'POST' && c.url.endsWith('/api/facts/summary/build'));
+      assert(post && JSON.parse(post.body).hours === 24, 'тело: ' + (post && post.body));
+      assert(text('#facts-result').includes('Сводка №3 собрана'), 'итог: ' + text('#facts-result'));
+      await until('сводка №3', () => text('#facts-summary h3').includes('Сводка №3'));
+    });
+
+    await check('факты: отказ в подтверждении, запроса нет', async () => {
+      window.confirm = () => false;
+      const before = factsCalls.filter(c => c.method === 'POST').length;
+      click('#facts-run-issue');
+      await sleep(100);
+      assert(factsCalls.filter(c => c.method === 'POST').length === before, 'POST ушёл без согласия');
+      window.confirm = msg => { asked = msg; return true; };
+    });
+
+    await check('факты: закрытие окна останавливает опрос', async () => {
+      click('#window [data-action="closeWindow"]');
+      await until('закрытие', () => !windowOpen());
+      await until('опрос остановлен', () => !app.facts.timer, 2000);
+    });
+  };
+
+  /* Демон не отвечает: status — conn=down с подсказкой, остальное 503. */
+  scenarios['facts-down'] = async () => {
+    await booted();
+    await check('факты-503: кнопка на пульте, демон не отвечает', async () => {
+      await until('красная точка', () => q('#facts-button .facts-dot.bad'), 8000);
+      assert(q('#facts-button').title.includes('не отвечает'), 'подсказка: ' + q('#facts-button').title);
+    });
+    await check('факты-503: строка состояния с подсказкой', async () => {
+      await openFacts();
+      const s = text('#facts-status');
+      assert(s.includes('демон не отвечает') && s.includes('animals-mcp -http 127.0.0.1:8766'), 'состояние: ' + s);
+    });
+    await check('факты-503: заглушка вместо ленты, кнопки выключены', () => {
+      const d = q('#facts-body .facts-down');
+      assert(d && d.textContent.includes('не подключён') && d.textContent.includes('animals-mcp -http'), 'нет заглушки: ' + factsBody());
+      assert(!q('#facts-search'), 'строка поиска при недоступном демоне');
+      assert(!q('#facts-body .facts-card') && !q('#facts-body .facts-error'), 'лишнее в ленте');
+      assert($('facts-run-issue').disabled && $('facts-run-summary').disabled, 'кнопки запуска активны');
+    });
+    await check('факты-503: сводки, та же заглушка', async () => {
+      click('#facts-tab-summaries');
+      await until('заглушка сводок', () => q('#facts-body .facts-down') && $('facts-tab-summaries').classList.contains('active'));
+      assert(qa('#facts-body .facts-down').length === 1, 'заглушек ' + qa('#facts-body .facts-down').length);
+    });
+  };
+
   /* Снимки экрана: только довести страницу до нужного вида. */
   scenarios['shot-top'] = async () => { await until('загрузка', () => app.conv, 8000); await sleep(300); };
   scenarios['shot-bottom'] = async () => {
@@ -353,6 +564,20 @@
     window.scrollTo(0, document.body.scrollHeight);
   };
   scenarios['shot-people'] = async () => { await booted(); await openWin('people'); };
+  scenarios['shot-facts'] = async () => { await booted(); await openFacts(); };
+  scenarios['shot-facts-detail'] = async () => {
+    await booted();
+    await openFacts();
+    click('#facts-body .facts-card[data-issue="3"] .facts-lead');
+    await until('подробности', () => q('#facts-body .facts-spend'));
+  };
+  scenarios['shot-facts-summary'] = async () => {
+    await booted();
+    await openFacts();
+    click('#facts-tab-summaries');
+    await until('сводка', () => q('#facts-summary'));
+  };
+  scenarios['shot-facts-down'] = async () => { await booted(); await openFacts(); };
 
   async function run() {
     const name = new URLSearchParams(location.search).get('scenario') || 'main';

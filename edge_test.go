@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"io/fs"
@@ -24,6 +25,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -115,6 +117,8 @@ type edgeApp struct {
 	// Диалоги сценария: основной (карточка, ветки, сравнение), подборка и
 	// пустой.
 	main, coll, empty string
+	// facts — подставной демон «Интересных фактов» за /api/facts/.
+	facts *edgeFacts
 }
 
 func newEdgeApp(t *testing.T) *edgeApp {
@@ -153,7 +157,7 @@ func newEdgeApp(t *testing.T) *edgeApp {
 	for k, v := range persona.Meta() {
 		meta[k] = v
 	}
-	a := &edgeApp{m: m}
+	a := &edgeApp{m: m, facts: newEdgeFacts()}
 	a.handler = server.New(m, static, meta, append(people.Extension(), compile.Extension(m)...)...)
 	a.seed(t)
 	return a
@@ -205,7 +209,8 @@ func (a *edgeApp) seed(t *testing.T) {
 }
 
 // page — сервер для браузера: настоящий обработчик приложения, но в
-// index.html после app.js подключён сценарий (и, для снимков, стиль, при
+// index.html после app.js подключён сценарий, а /api/facts/ отвечает
+// подставной демон (edgeFacts); для снимков — ещё и стиль, при
 // котором прокручивается body, а не окно).
 func (a *edgeApp) page(t *testing.T, shots bool) *httptest.Server {
 	t.Helper()
@@ -227,6 +232,7 @@ func (a *edgeApp) page(t *testing.T, shots bool) *httptest.Server {
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		w.Write(scenario)
 	})
+	mux.Handle("/api/facts/", a.facts)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -272,6 +278,8 @@ func TestEdge(t *testing.T) {
 		{"main", a.main},
 		{"collection", a.coll},
 		{"empty", a.empty},
+		{"facts", a.main},
+		{"facts-down", a.main},
 	}
 	total := 0
 	for _, sc := range scenarios {
@@ -321,10 +329,238 @@ func TestEdge(t *testing.T) {
 			{"collection.png", "shot-bottom", a.coll},
 			{"empty.png", "shot-top", a.empty},
 			{"window-people.png", "shot-people", a.main},
+			{"facts-feed.png", "shot-facts", a.main},
+			{"facts-detail.png", "shot-facts-detail", a.main},
+			{"facts-summary.png", "shot-facts-summary", a.main},
+			{"facts-down.png", "shot-facts-down", a.main},
 		} {
 			edgeRun(t, edge, fmt.Sprintf("%s/?scenario=%s#c=%s", shot.URL, s.scenario, s.conv), "1400,900",
 				"--screenshot="+filepath.Join(abs, s.file))
 			t.Logf("снимок: %s", filepath.Join(abs, s.file))
 		}
 	}
+}
+
+// edgeFacts — подставной демон «Интересных фактов» за REST /api/facts/*:
+// тела ответов — в форматах инструментов демона (internal/daemon/tools.go),
+// коды — по контракту internal/feed. Состояние выбирает адрес страницы
+// (Referer): сценарии с «facts-down» видят недоступный демон — status
+// отвечает conn=down, остальное 503. Поиск «ошибка» отвечает 422.
+type edgeFacts struct {
+	mu    sync.Mutex
+	added []map[string]any // выпуски, собранные «Собрать выпуск сейчас»
+	built int              // сводок, собранных «Собрать сводку»
+}
+
+func newEdgeFacts() *edgeFacts { return &edgeFacts{} }
+
+const edgeFactsHint = "запусти animals-mcp -http 127.0.0.1:8766"
+
+func edgeSrc(id, title, url string) map[string]any {
+	return map[string]any{"id": id, "title": title, "url": url}
+}
+
+func edgeFact(text string, src ...map[string]any) map[string]any {
+	return map[string]any{"text": text, "sources": src}
+}
+
+// edgeIssues — выпуски ленты, новые первыми. Второй — с разметкой в
+// текстах: интерфейс обязан показать её буквами.
+func edgeIssues() []map[string]any {
+	mdd := edgeSrc("S1", "MDD: Otocolobus manul", "https://www.mammaldiversity.org/taxon/1006010")
+	wiki := edgeSrc("S2", "Википедия: Манул", "https://ru.wikipedia.org/wiki/Манул")
+	return []map[string]any{
+		{"id": 3, "created_at": "2026-09-25T14:00:00+03:00", "species_id": 1006010, "sci_name": "Otocolobus manul",
+			"name_ru": "Манул", "iucn": "LC", "status": "ok", "title": "Манул: кошка с круглыми зрачками",
+			"lead": "Манул живёт в холодных степях Центральной Азии и почти не умеет быстро бегать.",
+			"facts": []map[string]any{
+				edgeFact("Зрачки манула остаются круглыми даже на ярком свету.", mdd, wiki),
+				edgeFact("Густой мех позволяет ему лежать на снегу и мёрзлой земле.", wiki),
+				edgeFact("Ссылка с опасной схемой не должна стать ссылкой.", edgeSrc("S3", "подложный", "javascript:alert(1)")),
+			},
+			"out_of_range": []string{"Germany", "Japan"}, "cost_usd": 0.0021},
+		{"id": 2, "created_at": "2026-09-25T13:00:00+03:00", "species_id": 1001234, "sci_name": "Erinaceus <b>europaeus</b>",
+			"name_ru": "Ёж <i>обыкновенный</i>", "iucn": "EN", "status": "thin", "title": "<script>window.__xss=2</script>Ёж",
+			"lead": "Вступление с <b>тегом</b>.",
+			"facts": []map[string]any{
+				edgeFact(`<img src=x onerror="window.__xss=1">Ёж спит всю зиму.`,
+					edgeSrc("S1", `"><img src=x onerror=window.__xss=3>`, "https://example.org/?a=<b>")),
+			},
+			"cost_usd": 0.0017},
+		{"id": 1, "created_at": "2026-09-25T12:00:00+03:00", "species_id": 1002000, "sci_name": "Craseonycteris thonglongyai",
+			"name_ru": "Свиноносая летучая мышь", "iucn": "NT", "status": "ok", "title": "Самое маленькое млекопитающее",
+			"lead": "Весит около двух граммов.",
+			"facts": []map[string]any{
+				edgeFact("Живёт в известняковых пещерах Таиланда и Мьянмы.", edgeSrc("S1", "MDD", "https://www.mammaldiversity.org/")),
+			},
+			"cost_usd": 0.0019},
+	}
+}
+
+func edgeNewIssue(id int) map[string]any {
+	return map[string]any{"id": id, "created_at": "2026-09-25T14:40:00+03:00", "species_id": 1003000,
+		"sci_name": "Tapirus pinchaque", "name_ru": "Горный тапир", "iucn": "EN", "status": "ok",
+		"title": "Горный тапир: шуба для Анд", "lead": "Самый мохнатый из тапиров.",
+		"facts":    []map[string]any{edgeFact("Живёт на высоте до 4500 м.", edgeSrc("S1", "MDD", "https://www.mammaldiversity.org/"))},
+		"cost_usd": 0.0023}
+}
+
+func edgeSummary(id int) map[string]any {
+	return map[string]any{"id": id, "from": "2026-09-24T15:00:00+03:00", "to": "2026-09-25T15:00:00+03:00",
+		"created_at": "2026-09-25T15:00:05+03:00", "trigger": "schedule",
+		"text": fmt.Sprintf("Сводка %d. За сутки — три выпуска: манул, ёж и свиноносая летучая мышь.\n\n"+
+			"Один выпуск тонкий: проверяющий отбросил два факта.", id),
+		"aggregate": map[string]any{
+			"issues":    3,
+			"by_status": []map[string]any{{"key": "ok", "count": 2}, {"key": "thin", "count": 1}},
+			"species": []map[string]any{
+				{"issue_id": 3, "sci_name": "Otocolobus manul", "name_ru": "Манул", "status": "ok", "facts": 3},
+				{"issue_id": 1, "sci_name": "Craseonycteris thonglongyai", "status": "ok", "facts": 1}},
+			"by_order": []map[string]any{{"key": "Carnivora", "count": 1}, {"key": "Chiroptera", "count": 1}, {"key": "Eulipotyphla", "count": 1}},
+			"by_iucn":  []map[string]any{{"key": "LC", "count": 1}, {"key": "NT", "count": 1}, {"key": "EN", "count": 1}},
+			"by_realm": []map[string]any{{"key": "Palearctic", "count": 2}},
+			"facts":    5, "dropped": 2, "dropped_share": 0.2857, "picks": 4, "rejected": 1,
+			"rejected_by_reason":   []map[string]any{{"key": "мало источников", "count": 1}},
+			"failures":             []string{"12:30 issue: досье: GBIF не ответил"},
+			"out_of_range_species": []string{"Otocolobus manul: Germany, Japan"},
+			"cost_usd":             0.0081, "budget_skips": 0},
+		"cost": map[string]any{"usd": 0.0009, "tariff": "deepseek", "known": true}}
+}
+
+func edgeFullIssue(is map[string]any) map[string]any {
+	full := map[string]any{"order": "Carnivora", "family": "Felidae", "realms": []string{"Palearctic"}, "took": "38.1s",
+		"dropped": []map[string]any{{"text": "Манул — предок домашней кошки.",
+			"sources": []map[string]any{edgeSrc("S2", "Википедия", "https://ru.wikipedia.org/wiki/Манул")},
+			"reason":  "источник этого не говорит"}},
+		"observations": map[string]any{"total": 1532, "window_days": 365, "recent": 88, "by_country": []map[string]any{
+			{"code": "MN", "name": "Mongolia", "count": 900, "range": "in"},
+			{"code": "DE", "name": "Germany", "count": 12, "range": "out"}}},
+		"spend": []map[string]any{
+			{"step": "editor", "model": "deepseek-v4-flash", "requests": 1, "tokens": 5200, "cost_usd": 0.0014, "took": "21.3s"},
+			{"step": "verifier", "model": "deepseek-v4-flash", "requests": 1, "tokens": 2600, "cost_usd": 0.0007, "took": "16.8s"}}}
+	for k, v := range is {
+		full[k] = v
+	}
+	return full
+}
+
+func (f *edgeFacts) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	reply := func(code int, v any) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(code)
+		json.NewEncoder(w).Encode(v)
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/facts")
+	if strings.Contains(r.Referer(), "facts-down") {
+		if path == "/status" {
+			reply(200, map[string]any{"conn": "down", "server": "http://127.0.0.1:8766",
+				"reason": "dial tcp 127.0.0.1:8766: connection refused", "hint": edgeFactsHint, "checked": time.Now()})
+			return
+		}
+		reply(503, map[string]any{"error": "демон «Интересных фактов» не отвечает (127.0.0.1:8766): " + edgeFactsHint})
+		return
+	}
+	if path == "/run" || path == "/summary/build" {
+		f.run(w, r, path, reply)
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	issues := append(append([]map[string]any{}, f.added...), edgeIssues()...)
+	q := r.URL.Query()
+	switch path {
+	case "/status":
+		reply(200, map[string]any{"conn": "ok", "server": "http://127.0.0.1:8766", "version": "animals-mcp 1.8", "checked": time.Now(),
+			"schedule": map[string]any{"now": "2026-09-25T14:25:00+03:00", "location": "Europe/Moscow", "budget_usd": 0.5,
+				"spent_today_usd": 0.0123, "budget_text": "потрачено $0.0123 из $0.50 за сутки, осталось $0.4877",
+				"jobs": []map[string]any{
+					{"name": "issue", "every": "1h0m0s", "paid": true, "running": false, "next_text": "25.09.2026 15:00 (через 35 мин)",
+						"last_text": "25.09.2026 14:00 (25 мин назад): ok — Манул, 3 факта; $0.0021"},
+					{"name": "summary", "daily": "15:00", "paid": true, "running": false, "next_text": "25.09.2026 15:00 (через 35 мин)"},
+					{"name": "mdd", "daily": "04:00", "paid": false, "running": false, "next_text": "26.09.2026 04:00 (через 13 ч 35 мин)"},
+				}}})
+	case "/latest":
+		reply(200, map[string]any{"total": len(issues), "returned": len(issues), "issues": issues})
+	case "/issue":
+		for _, is := range issues {
+			if fmt.Sprint(is["id"]) == q.Get("id") {
+				reply(200, edgeFullIssue(is))
+				return
+			}
+		}
+		reply(422, map[string]any{"error": "выпуска с id " + q.Get("id") + " нет"})
+	case "/search":
+		text := strings.ToLower(q.Get("text"))
+		if text == "ошибка" {
+			reply(422, map[string]any{"error": "since: ожидалась дата YYYY-MM-DD или время RFC3339"})
+			return
+		}
+		rows := []map[string]any{}
+		for _, is := range issues {
+			if strings.Contains(strings.ToLower(fmt.Sprint(is["name_ru"], is["title"], is["sci_name"])), text) {
+				rows = append(rows, map[string]any{"id": is["id"], "created_at": is["created_at"], "sci_name": is["sci_name"],
+					"name_ru": is["name_ru"], "status": is["status"], "title": is["title"]})
+			}
+		}
+		out := map[string]any{"total": len(rows), "returned": len(rows), "offset": 0, "issues": rows}
+		if len(rows) == 0 {
+			out["hint"] = "Ничего не найдено."
+		}
+		reply(200, out)
+	case "/summary":
+		id := 2 + f.built
+		if s := q.Get("id"); s != "" {
+			fmt.Sscan(s, &id)
+		}
+		if id < 1 || id > 2+f.built {
+			reply(422, map[string]any{"error": fmt.Sprintf("сводки с id %d нет", id)})
+			return
+		}
+		reply(200, edgeSummary(id))
+	case "/summaries":
+		rows := []map[string]any{}
+		for id := 2 + f.built; id >= 1; id-- {
+			s := edgeSummary(id)
+			rows = append(rows, map[string]any{"id": id, "from": s["from"], "to": s["to"], "created_at": s["created_at"],
+				"trigger": s["trigger"], "text": s["text"]})
+		}
+		reply(200, map[string]any{"returned": len(rows), "summaries": rows, "hint": "Сводка целиком — summary_get с id."})
+	default:
+		reply(404, map[string]any{"error": "нет такого пути"})
+	}
+}
+
+// run — POST /run и /summary/build: запуск идёт секунды, интерфейс должен
+// показать ожидание и не дать нажать второй раз.
+func (f *edgeFacts) run(w http.ResponseWriter, r *http.Request, path string, reply func(int, any)) {
+	if r.Method != http.MethodPost {
+		reply(405, map[string]any{"error": "нужен POST"})
+		return
+	}
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		reply(400, map[string]any{"error": "тело не JSON: " + err.Error()})
+		return
+	}
+	time.Sleep(700 * time.Millisecond)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if path == "/summary/build" {
+		if body["hours"] != float64(24) {
+			reply(400, map[string]any{"error": fmt.Sprintf("неожиданное тело %v", body)})
+			return
+		}
+		f.built++
+		reply(200, edgeSummary(2+f.built))
+		return
+	}
+	if body["job"] != "issue" {
+		reply(400, map[string]any{"error": fmt.Sprintf("неожиданное тело %v", body)})
+		return
+	}
+	id := 4 + len(f.added)
+	f.added = append([]map[string]any{edgeNewIssue(id)}, f.added...)
+	reply(200, map[string]any{"run": map[string]any{"id": 77, "job": "issue", "trigger": "manual", "status": "ok",
+		"ref": fmt.Sprintf("issue:%d", id), "detail": "Горный тапир, 1 факт", "cost_usd": 0.0023, "took": "0.7s"},
+		"issue": edgeNewIssue(id)})
 }

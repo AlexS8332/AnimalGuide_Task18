@@ -1148,6 +1148,554 @@ app.windows.charter = {
 refreshMCP();
 setInterval(() => { if (document.visibilityState === 'visible') refreshMCP(); }, 5000);
 
+// ===== Интересные факты =====
+
+/* Раздел «Интересные факты»: выпуски и сводки, которые собирает отдельный
+   демон (раз в час — выпуск о случайном млекопитающем, раз в сутки —
+   сводка). Приложение только пересылает REST /api/facts/* к демону; демона
+   может не быть — тогда раздел показывает заглушку с подсказкой, а не
+   ошибки. Тексты выпусков пересказывают внешние источники: всё из ответов
+   идёт через esc(), ссылки — только http/https.
+
+   Код раздела живёт одним куском здесь; в общих функциях его нет — кнопка
+   на пульте и окно регистрируются отсюда же. */
+
+const facts = {
+  status: null,        // /api/facts/status (Status) или {conn, reason, hint} при сбое
+  tab: 'feed',         // feed | summaries
+  latest: null,        // {ok, code, data} ответа /api/facts/latest
+  query: '',           // строка поиска
+  search: null,        // {ok, code, data} ответа /api/facts/search
+  detail: null,        // {id, res} — открытый выпуск
+  summary: null,       // {id, res} — открытая сводка (id 0 — последняя)
+  summaries: null,     // {ok, code, data} списка сводок
+  busy: '',            // issue | summary — идёт платный запуск
+  busySince: 0,
+  result: null,        // {kind, html} — итог последнего запуска
+  timer: null,         // опрос статуса, пока окно открыто
+  tick: null,          // счётчик секунд ожидания
+};
+app.facts = facts;
+
+const factsPollMs = 30000;
+const factsCostNote = 'платно: около $0.002 за запрос к модели, расход пойдёт в дневной лимит демона';
+const factsConnText = { ok: 'подключён', down: 'не отвечает', denied: 'отверг токен', off: 'выключен', unknown: 'проверяю…', none: 'нет в этом сервере' };
+const factsConnClass = { ok: 'ok', down: 'bad', denied: 'bad', off: 'warn', unknown: '', none: 'warn' };
+const factsIUCN = {
+  LC: ['вызывает наименьшие опасения', 'ok'], NT: ['близок к уязвимому', 'warn'], VU: ['уязвимый', 'warn'],
+  EN: ['вымирающий', 'bad'], CR: ['на грани исчезновения', 'bad'], EW: ['исчез в дикой природе', 'bad'],
+  EX: ['исчез', 'bad'], DD: ['данных недостаточно', ''], NE: ['не оценён', ''],
+};
+const factsIssueStatus = { ok: ['', ''], thin: ['мало фактов', 'warn'], failed: ['не собрался', 'bad'] };
+const factsRunStatus = { ok: 'готово', failed: 'сбой', budget: 'лимит расходов', skipped: 'пропущено' };
+const factsOutOfRangeNote = 'Страны, где GBIF видел вид, а MDD не числит в ареале. Чаще это зоопарки, интродукция или ошибки определения, а не новый ареал.';
+const factsDaemonHint = 'Запустите демон в отдельном окне: animals-mcp -http 127.0.0.1:8766 (токен — тот же MCP_TOKEN, что у приложения), затем нажмите «обновить».';
+
+// factsAPI — запрос к /api/facts/* без исключений: {ok, code, data, error}.
+// Код 0 — сеть или сервер приложения не ответили.
+async function factsAPI(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  try {
+    const res = await fetch(path, opts);
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { error: text }; }
+    const error = res.ok ? '' : ((data && data.error) || ('HTTP ' + res.status));
+    return { ok: res.ok, code: res.status, data: data || {}, error };
+  } catch (e) {
+    return { ok: false, code: 0, data: {}, error: 'сервер приложения не отвечает: ' + e.message };
+  }
+}
+
+// factsURL — только http/https; остальное (javascript:, data:, мусор) — ''.
+function factsURL(u) {
+  try {
+    const x = new URL(String(u || ''));
+    return x.protocol === 'http:' || x.protocol === 'https:' ? x.href : '';
+  } catch (e) { return ''; }
+}
+function factsUSD(v) { return typeof v === 'number' && isFinite(v) ? '$' + v.toFixed(4) : '—'; }
+function factsList(v) { return Array.isArray(v) ? v : []; }
+function factsJob(name) {
+  const s = facts.status && facts.status.schedule;
+  return s ? factsList(s.jobs).find(j => j.name === name) : null;
+}
+const factsConnected = () => !!(facts.status && facts.status.conn === 'ok');
+
+async function factsLoadStatus() {
+  const r = await factsAPI('GET', '/api/facts/status');
+  if (r.ok) facts.status = r.data;
+  else if (r.code === 404) facts.status = { conn: 'none', reason: 'сервер приложения не знает /api/facts', hint: 'обновите приложение' };
+  else facts.status = { conn: 'down', reason: r.error, hint: '' };
+  factsRenderButton();
+}
+async function factsLoadLatest() { facts.latest = await factsAPI('GET', '/api/facts/latest?limit=10'); }
+async function factsLoadSummaries() {
+  const [one, list] = await Promise.all([
+    factsAPI('GET', '/api/facts/summary' + (facts.summary && facts.summary.id ? '?id=' + encodeURIComponent(facts.summary.id) : '')),
+    factsAPI('GET', '/api/facts/summaries'),
+  ]);
+  facts.summary = { id: facts.summary ? facts.summary.id : 0, res: one };
+  facts.summaries = list;
+}
+
+/* ---------- кнопка на пульте ---------- */
+
+function factsRenderButton() {
+  let btn = $('facts-button');
+  if (!btn) {
+    const anchor = $('windows-button');
+    if (!anchor) return;
+    btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'facts-button';
+    btn.className = 'ghost facts-button';
+    btn.dataset.action = 'openWindow';
+    btn.dataset.arg = 'facts';
+    anchor.insertAdjacentElement('afterend', btn);
+  }
+  const conn = facts.status ? facts.status.conn : 'unknown';
+  btn.innerHTML = `<span class="facts-dot ${esc(factsConnClass[conn] || '')}"></span>Факты`;
+  const lines = ['«Интересные факты»: выпуски и сводки демона', 'демон: ' + (factsConnText[conn] || conn)];
+  if (facts.status && facts.status.reason) lines.push('причина: ' + facts.status.reason);
+  btn.title = lines.join('\n');
+}
+
+/* ---------- окно ---------- */
+
+app.windows.facts = {
+  title: 'Интересные факты',
+  async render() {
+    await factsLoadStatus();
+    await Promise.all([factsLoadLatest(), facts.tab === 'summaries' ? factsLoadSummaries() : null]);
+    factsStartPoll();
+    return `<div id="facts-root" class="facts">
+      <div id="facts-status" class="facts-status">${factsStatusHTML()}</div>
+      <div id="facts-actions" class="facts-actions">${factsActionsHTML()}</div>
+      <div class="tabs facts-tabs" id="facts-tabs">${factsTabsHTML()}</div>
+      <div id="facts-body" class="facts-body">${factsBodyHTML()}</div>
+    </div>`;
+  },
+};
+
+function factsStartPoll() {
+  factsStopPoll();
+  facts.timer = setInterval(async () => {
+    if (!factsOpen()) { factsStopPoll(); return; }
+    const was = facts.status && facts.status.conn;
+    await factsLoadStatus();
+    if (!factsOpen()) return;
+    factsPaint('status');
+    factsPaint('actions');
+    // Демон поднялся, пока окно открыто: подтягиваем ленту без клика.
+    if (was !== 'ok' && factsConnected()) {
+      await factsLoadLatest();
+      if (facts.tab === 'summaries') await factsLoadSummaries();
+      factsPaint('body');
+    }
+  }, factsPollMs);
+}
+function factsStopPoll() {
+  if (facts.timer) clearInterval(facts.timer);
+  facts.timer = null;
+}
+function factsOpen() { return !!($('facts-root') && $('window').open); }
+// Окно закрыто — опрос не нужен. Событие close приходит не везде (headless
+// Edge его не шлёт), поэтому следим и за атрибутом open.
+$('window').addEventListener('close', factsStopPoll);
+if (window.MutationObserver) {
+  new MutationObserver(() => { if (!$('window').open) factsStopPoll(); }).observe($('window'), { attributes: true, attributeFilter: ['open'] });
+}
+
+// factsPaint — перерисовать часть окна, если оно открыто.
+function factsPaint(...parts) {
+  if (!$('facts-root')) return;
+  const fn = { status: factsStatusHTML, actions: factsActionsHTML, tabs: factsTabsHTML, body: factsBodyHTML };
+  for (const p of parts) {
+    const el = $('facts-' + p);
+    if (el) el.innerHTML = fn[p]();
+  }
+}
+
+function factsStatusHTML() {
+  const s = facts.status || { conn: 'unknown' };
+  const conn = s.conn || 'unknown';
+  let html = `<div class="facts-status-row"><span class="chip ${esc(factsConnClass[conn] || '')}">демон ${esc(factsConnText[conn] || conn)}</span>`;
+  if (s.server) html += `<span class="hint">${esc(s.server)}${s.version ? ' · ' + esc(s.version) : ''}</span>`;
+  if (conn === 'ok') {
+    const issue = factsJob('issue'), summary = factsJob('summary');
+    if (issue) html += `<span><span class="lbl">следующий выпуск</span>${esc(issue.running ? 'идёт сейчас' : (issue.next_text || '—'))}</span>`;
+    if (summary) html += `<span><span class="lbl">сводка</span>${esc(summary.running ? 'идёт сейчас' : (summary.next_text || '—'))}</span>`;
+    const budget = s.schedule && s.schedule.budget_text;
+    if (budget) html += `<span><span class="lbl">бюджет</span>${esc(budget)}</span>`;
+  }
+  html += `<button type="button" class="small" data-action="factsRefresh" title="Перечитать состояние, ленту и сводки">обновить</button></div>`;
+  if (conn === 'ok') {
+    const issue = factsJob('issue');
+    if (issue && issue.last_text) html += `<div class="hint">последний выпуск: ${esc(issue.last_text)}</div>`;
+  } else {
+    if (s.reason) html += `<div class="hint">причина: ${esc(s.reason)}</div>`;
+    html += `<div class="facts-hint">${esc(s.hint || (conn === 'unknown' ? '' : factsDaemonHint))}</div>`;
+  }
+  return html;
+}
+
+function factsActionsHTML() {
+  const off = !factsConnected();
+  const busy = !!facts.busy;
+  const why = off ? ' title="Демон не подключён"' : busy ? ' title="Уже идёт запуск — дождитесь итога"' : '';
+  let html = `<button type="button" class="solid" id="facts-run-issue" data-action="factsRun" data-arg="issue"${off || busy ? ' disabled' : ''}${why}>Собрать выпуск сейчас</button>
+    <button type="button" id="facts-run-summary" data-action="factsRun" data-arg="summary"${off || busy ? ' disabled' : ''}${why}>Собрать сводку</button>
+    <span class="hint">${esc(factsCostNote)}</span>`;
+  if (busy) {
+    const sec = Math.max(0, Math.round((Date.now() - facts.busySince) / 1000));
+    html += `<div class="facts-wait" id="facts-wait"><span class="thinking">${facts.busy === 'issue' ? 'демон собирает выпуск — это секунды, иногда до пары минут' : 'демон пишет сводку'}</span> <span class="hint">${sec} с</span></div>`;
+  } else if (facts.result) {
+    html += `<div class="facts-result ${esc(facts.result.kind)}" id="facts-result">${facts.result.html}</div>`;
+  }
+  return html;
+}
+
+function factsTabsHTML() {
+  return `<button type="button" class="tab${facts.tab === 'feed' ? ' active' : ''}" data-action="factsTab" data-arg="feed" id="facts-tab-feed">Лента</button>
+    <button type="button" class="tab${facts.tab === 'summaries' ? ' active' : ''}" data-action="factsTab" data-arg="summaries" id="facts-tab-summaries">Сводки</button>`;
+}
+
+function factsBodyHTML() {
+  if (facts.tab === 'summaries') return factsSummariesHTML();
+  if (facts.detail) return factsDetailHTML();
+  return factsFeedHTML();
+}
+
+// factsProblem — заглушка вместо данных: 503 (демона нет), 422 (ошибка
+// инструмента), прочее. null — ответ в порядке.
+function factsProblem(r) {
+  if (!r) return '<p class="hint">загружаю…</p>';
+  if (r.ok) return null;
+  if (r.code === 503 || r.code === 0 || r.code === 404) {
+    const s = facts.status || {};
+    const hint = s.hint || factsDaemonHint;
+    return `<div class="facts-down"><b>Демон «Интересных фактов» не подключён.</b>
+      <div>${esc(r.error)}</div>
+      ${hint && !String(r.error).includes(hint) ? `<div class="facts-hint">${esc(hint)}</div>` : ''}
+      <div class="hint">Выпуски собирает отдельный процесс; справочник работает и без него.</div></div>`;
+  }
+  return `<div class="facts-error">${esc(r.error)}</div>`;
+}
+
+/* ---------- лента и поиск ---------- */
+
+function factsSearchHTML() {
+  return `<form class="facts-search" data-submit="factsSearch" id="facts-search">
+    <input type="search" id="facts-query" value="${esc(facts.query)}" placeholder="Поиск по выпускам: манул, Panthera, зрачки…" autocomplete="off">
+    <button type="submit" class="small">Найти</button>
+    ${facts.search ? '<button type="button" class="small" data-action="factsSearchReset">× вся лента</button>' : ''}
+  </form>`;
+}
+
+function factsFeedHTML() {
+  let html = factsSearchHTML();
+  if (facts.search) {
+    const bad = factsProblem(facts.search);
+    if (bad) return html + bad;
+    const d = facts.search.data;
+    const rows = factsList(d.issues);
+    html += `<div class="hint">найдено ${num(d.total)}${d.total > rows.length ? ', показаны ' + num(rows.length) : ''} по «${esc(facts.query)}»</div>`;
+    if (!rows.length) return html + `<p class="hint">${esc(d.hint || 'ничего не найдено')}</p>`;
+    html += `<table class="grid facts-found"><tr><th>№</th><th>когда</th><th>вид</th><th>заголовок</th><th></th></tr>${rows.map(r => {
+      const st = factsIssueStatus[r.status] || [r.status, ''];
+      return `<tr class="facts-row" data-action="factsIssue" data-arg="${esc(r.id)}"><td>${esc(r.id)}</td><td>${esc(when(r.created_at))}</td>
+        <td>${esc(r.name_ru || '')} <span class="latin">${esc(r.sci_name)}</span></td><td>${esc(r.title || '')}</td>
+        <td>${st[0] ? `<span class="chip ${esc(st[1])}">${esc(st[0])}</span>` : ''}</td></tr>`;
+    }).join('')}</table>`;
+    if (d.hint) html += `<p class="hint">${esc(d.hint)}</p>`;
+    return html;
+  }
+  const bad = factsProblem(facts.latest);
+  // Демона нет — искать негде: вместо строки поиска одна заглушка.
+  if (bad) return facts.latest && facts.latest.code === 422 ? html + bad : bad;
+  const d = facts.latest.data;
+  const list = factsList(d.issues);
+  if (!list.length) return html + `<p class="hint">${esc(d.hint || 'Выпусков ещё нет.')}</p>`;
+  html += `<div class="facts-feed">${list.map(is => factsCardHTML(is, false)).join('')}</div>`;
+  if (d.total > list.length) html += `<p class="hint">показаны последние ${num(list.length)} из ${num(d.total)} — остальные через поиск</p>`;
+  return html;
+}
+
+function factsSourcesHTML(refs) {
+  return factsList(refs).map(s => {
+    const url = factsURL(s.url);
+    const label = esc(s.id || '?');
+    const tip = esc((s.title || 'источник') + (url ? '\n' + url : '\nссылки нет'));
+    return url
+      ? `<a class="facts-src" href="${esc(url)}" target="_blank" rel="noopener" title="${tip}">${label}</a>`
+      : `<span class="facts-src none" title="${tip}">${label}</span>`;
+  }).join('');
+}
+
+function factsIUCNChip(code) {
+  if (!code) return '';
+  const k = String(code).toUpperCase();
+  const t = factsIUCN[k];
+  return `<span class="chip ${esc(t ? t[1] : '')}" title="Статус МСОП (IUCN)">МСОП: ${esc(k)}${t ? ' — ' + esc(t[0]) : ''}</span>`;
+}
+
+// factsCardHTML — выпуск карточкой; full — в подробном виде (без клика).
+function factsCardHTML(is, full) {
+  const st = factsIssueStatus[is.status] || [is.status, ''];
+  const head = `<div class="facts-card-head">
+      <h3>${esc(is.title || is.name_ru || is.sci_name)}</h3>
+      <span class="facts-species">${is.name_ru ? esc(is.name_ru) + ' ' : ''}<span class="latin">${esc(is.sci_name)}</span></span>
+      ${factsIUCNChip(is.iucn)}${st[0] ? `<span class="chip ${esc(st[1])}">${esc(st[0])}</span>` : ''}
+    </div>`;
+  let html = `<article class="facts-card${full ? ' full' : ''} facts-${esc(is.status)}"${full ? '' : ` data-action="factsIssue" data-arg="${esc(is.id)}" title="Подробно: отброшенные факты, наблюдения, расход"`} data-issue="${esc(is.id)}">${head}`;
+  if (is.lead) html += `<p class="facts-lead">${esc(is.lead)}</p>`;
+  if (is.error) html += `<div class="facts-error">${esc(is.error)}</div>`;
+  const list = factsList(is.facts);
+  if (list.length) {
+    html += `<ol class="facts-facts">${list.map(f => `<li>${esc(f.text)} <span class="facts-srcs">${factsSourcesHTML(f.sources)}</span></li>`).join('')}</ol>`;
+  }
+  const out = factsList(is.out_of_range);
+  if (out.length) {
+    html += `<div class="facts-range"><span class="chip warn" title="${esc(factsOutOfRangeNote)}">вне ареала MDD: ${esc(out.join(', '))}</span>
+      <span class="hint">наблюдения вне ареала — чаще зоопарки, интродукция или ошибки определения</span></div>`;
+  }
+  html += `<div class="facts-meta"><span>выпуск №${esc(is.id)}</span><span>собран ${esc(when(is.created_at))}</span><span>${esc(factsUSD(is.cost_usd))}</span>
+    ${full ? '' : '<span class="facts-more">подробно →</span>'}</div>`;
+  return html + '</article>';
+}
+
+function factsDetailHTML() {
+  const back = `<button type="button" class="small" data-action="factsBack" id="facts-back">← ${facts.search ? 'к поиску' : 'к ленте'}</button>`;
+  const r = facts.detail.res;
+  const bad = factsProblem(r);
+  if (bad) return back + bad;
+  const is = r.data;
+  let html = back + factsCardHTML(is, true);
+  const where = [is.order && 'отряд ' + is.order, is.family && 'семейство ' + is.family,
+    factsList(is.realms).length && 'области: ' + factsList(is.realms).join(', ')].filter(Boolean);
+  if (where.length) html += `<p class="hint">${esc(where.join(' · '))}</p>`;
+
+  const dropped = factsList(is.dropped);
+  html += `<h4 class="facts-h">Отброшенные факты <span class="hint">${num(dropped.length)}</span></h4>`;
+  html += dropped.length
+    ? `<ul class="facts-dropped">${dropped.map(f => `<li><span class="facts-dropped-text">${esc(f.text)}</span> <span class="facts-srcs">${factsSourcesHTML(f.sources)}</span>
+        <div class="facts-reason">причина: ${esc(f.reason || 'не указана')}</div></li>`).join('')}</ul>`
+    : '<p class="hint">Проверяющий не отбросил ни одного факта.</p>';
+
+  const o = is.observations || {};
+  html += `<h4 class="facts-h">Наблюдения GBIF</h4><p>всего ${num(o.total)}${o.window_days ? `, за последние ${num(o.window_days)} дн. — ${num(o.recent)}` : `, недавних — ${num(o.recent)}`}</p>`;
+  const bc = factsList(o.by_country);
+  if (bc.length) {
+    const rangeTitle = { in: 'в ареале', uncertain: 'ареал под вопросом', out: 'вне ареала MDD', unknown: 'не сопоставлена' };
+    html += `<table class="grid facts-countries"><tr><th>страна</th><th>наблюдений</th><th>ареал</th></tr>${bc.map(c =>
+      `<tr class="${c.range === 'out' ? 'facts-out' : ''}"><td>${esc(c.name || c.code)}${c.code ? ` <span class="hint">${esc(c.code)}</span>` : ''}</td><td>${num(c.count)}</td><td>${esc(rangeTitle[c.range] || c.range || '')}</td></tr>`).join('')}</table>`;
+  }
+
+  const spend = factsList(is.spend);
+  html += `<h4 class="facts-h">Расход по шагам${is.took ? ` <span class="hint">сборка ${esc(is.took)}</span>` : ''}</h4>`;
+  const stepTitle = { editor: 'редактор', verifier: 'проверяющий' };
+  html += spend.length
+    ? `<table class="grid facts-spend"><tr><th>шаг</th><th>модель</th><th>запросов</th><th>токенов</th><th>цена</th><th>время</th></tr>${spend.map(s =>
+        `<tr><td>${esc(stepTitle[s.step] || s.step)}</td><td>${esc(s.model)}</td><td>${num(s.requests)}</td><td>${num(s.tokens)}</td><td>${esc(factsUSD(s.cost_usd))}</td><td>${esc(s.took || '')}</td></tr>`).join('')}
+        <tr class="facts-total"><td colspan="4">итого</td><td>${esc(factsUSD(is.cost_usd))}</td><td></td></tr></table>`
+    : '<p class="hint">расхода нет</p>';
+  return html;
+}
+
+/* ---------- сводки ---------- */
+
+function factsCounts(list, map) {
+  const items = factsList(list);
+  if (!items.length) return '<span class="hint">—</span>';
+  return items.map(c => `<span class="chip">${esc(map ? (map[c.key] || c.key) : c.key)} ${num(c.count)}</span>`).join('');
+}
+
+// factsText — текст сводки абзацами, без markdown: пересказ внешнего — не
+// разметка.
+function factsText(t) {
+  return String(t || '').split(/\n{2,}/).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('');
+}
+
+function factsSummaryHTML(sm) {
+  const a = sm.aggregate || {};
+  const failures = factsList(a.failures);
+  const species = factsList(a.species);
+  const cost = sm.cost && typeof sm.cost.usd === 'number' ? sm.cost.usd : null;
+  let html = `<div class="facts-summary" id="facts-summary" data-summary="${esc(sm.id)}">
+    <h3>Сводка №${esc(sm.id)} <span class="hint">${esc(when(sm.from))} — ${esc(when(sm.to))} · написана ${esc(when(sm.created_at))}${sm.trigger ? ' · ' + esc(sm.trigger) : ''}</span></h3>`;
+  if (sm.error) html += `<div class="facts-error">текст не написан: ${esc(sm.error)} — цифры агрегата ниже верны</div>`;
+  html += `<div class="facts-summary-text">${factsText(sm.text) || '<p class="hint">текста нет</p>'}</div>`;
+  const cell = (k, v, sub) => `<div class="facts-fig"><div class="facts-fig-v">${v}</div><div class="facts-fig-k">${esc(k)}</div>${sub ? `<div class="hint">${sub}</div>` : ''}</div>`;
+  html += `<div class="facts-figs">
+    ${cell('выпусков', num(a.issues), factsList(a.by_status).map(c => esc(c.key) + ' ' + num(c.count)).join(' · '))}
+    ${cell('видов', num(species.length))}
+    ${cell('фактов', num(a.facts), 'отброшено ' + num(a.dropped) + (a.dropped_share ? ' (' + Math.round(a.dropped_share * 100) + '%)' : ''))}
+    ${cell('сбоев', num(failures.length), a.budget_skips ? 'упёрлись в лимит: ' + num(a.budget_skips) : '')}
+    ${cell('расход', esc(factsUSD(a.cost_usd)), cost !== null ? 'сводка ' + esc(factsUSD(cost)) : '')}
+  </div>`;
+  html += `<table class="grid facts-agg">
+    <tr><th>отряды</th><td>${factsCounts(a.by_order)}</td></tr>
+    <tr><th>статусы МСОП</th><td>${factsCounts(a.by_iucn)}</td></tr>
+    <tr><th>области</th><td>${factsCounts(a.by_realm)}</td></tr>
+    ${a.picks || a.rejected ? `<tr><th>выбор видов</th><td>${num(a.picks)} выбрано, ${num(a.rejected)} отвергнуто ${factsCounts(a.rejected_by_reason)}</td></tr>` : ''}
+    ${species.length ? `<tr><th>виды</th><td>${species.map(s => `<button type="button" class="small" data-action="factsIssue" data-arg="${esc(s.issue_id)}" title="${esc(s.title || '')}">${esc(s.name_ru || s.sci_name)}</button>`).join(' ')}</td></tr>` : ''}
+    ${failures.length ? `<tr><th>сбои</th><td>${failures.map(f => `<div>${esc(f)}</div>`).join('')}</td></tr>` : ''}
+    ${factsList(a.out_of_range_species).length ? `<tr><th>вне ареала MDD</th><td>${factsList(a.out_of_range_species).map(f => `<div>${esc(f)}</div>`).join('')}<div class="hint">${esc(factsOutOfRangeNote)}</div></td></tr>` : ''}
+    ${factsList(a.mdd_release).length ? `<tr><th>релиз MDD</th><td>${factsList(a.mdd_release).map(f => `<div>${esc(f)}</div>`).join('')}</td></tr>` : ''}
+  </table></div>`;
+  return html;
+}
+
+function factsSummariesHTML() {
+  let html = '';
+  const one = facts.summary && facts.summary.res;
+  if (!one) return '<p class="hint">загружаю…</p>';
+  // 503 — одна заглушка на вкладку, а не две.
+  if (!one.ok && (one.code === 503 || one.code === 0 || one.code === 404)) return factsProblem(one);
+  html += one.ok ? factsSummaryHTML(one.data) : `<div class="facts-error">${esc(one.error)}</div>`;
+  const list = facts.summaries;
+  html += '<h4 class="facts-h">Прошлые сводки</h4>';
+  const bad = factsProblem(list);
+  if (bad) return html + bad;
+  const rows = factsList(list.data.summaries);
+  if (!rows.length) return html + `<p class="hint">${esc(list.data.hint || 'сводок ещё не было')}</p>`;
+  const cur = one.ok ? one.data.id : null;
+  html += `<div class="facts-summaries">${rows.map(s => `<button type="button" class="facts-sum-row${s.id === cur ? ' current' : ''}" data-action="factsSummary" data-arg="${esc(s.id)}">
+      <b>№${esc(s.id)}</b> <span class="hint">${esc(when(s.from))} — ${esc(when(s.to))}${s.trigger ? ' · ' + esc(s.trigger) : ''}</span>
+      <span class="facts-sum-preview">${esc(s.error ? 'ошибка: ' + s.error : s.text)}</span></button>`).join('')}</div>`;
+  return html;
+}
+
+/* ---------- запуски ---------- */
+
+function factsRunResultHTML(job, r) {
+  if (!r.ok) {
+    const kind = r.code === 503 || r.code === 0 ? 'bad' : 'warn';
+    return { kind, html: `<b>${job === 'issue' ? 'Выпуск' : 'Сводка'} не собран${job === 'issue' ? '' : 'а'}.</b> ${esc(r.error)}` };
+  }
+  const d = r.data || {};
+  if (job === 'summary') {
+    // summary_build отвечает сводкой целиком.
+    const cost = d.cost && typeof d.cost.usd === 'number' ? d.cost.usd : null;
+    return { kind: d.error ? 'warn' : 'ok', html: `<b>Сводка №${esc(d.id)} собрана</b> за ${esc(when(d.from))} — ${esc(when(d.to))}${cost !== null ? ' · ' + esc(factsUSD(cost)) : ''}${d.error ? `<div>текст не написан: ${esc(d.error)}</div>` : ''}` };
+  }
+  const run = d.run || {};
+  const kind = run.status === 'ok' ? 'ok' : run.status === 'skipped' ? '' : run.status === 'budget' ? 'warn' : 'bad';
+  let html = `<b>${esc(factsRunStatus[run.status] || run.status || '?')}</b>`;
+  if (run.status === 'budget') html += ' — задание не запускалось: дневной лимит расходов исчерпан';
+  if (run.detail) html += ` · ${esc(run.detail)}`;
+  if (run.took) html += ` · ${esc(run.took)}`;
+  if (run.cost_usd) html += ` · ${esc(factsUSD(run.cost_usd))}`;
+  if (run.error && run.error !== run.detail) html += `<div>ошибка: ${esc(run.error)}</div>`;
+  if (d.hint) html += `<div class="hint">${esc(d.hint)}</div>`;
+  if (d.issue) html += ` <button type="button" class="small" data-action="factsIssue" data-arg="${esc(d.issue.id)}">открыть выпуск №${esc(d.issue.id)}</button>`;
+  return { kind, html };
+}
+
+async function factsRun(job) {
+  if (facts.busy || !factsConnected()) return;
+  const what = job === 'issue' ? 'Собрать выпуск о случайном виде сейчас?' : 'Собрать сводку за последние 24 часа сейчас?';
+  if (!window.confirm(what + '\n\nЭто ' + factsCostNote + '.')) return;
+  facts.busy = job;
+  facts.busySince = Date.now();
+  facts.result = null;
+  factsPaint('actions');
+  facts.tick = setInterval(() => {
+    const w = $('facts-wait');
+    if (w) w.querySelector('.hint').textContent = Math.round((Date.now() - facts.busySince) / 1000) + ' с';
+  }, 1000);
+  const r = job === 'issue'
+    ? await factsAPI('POST', '/api/facts/run', { job: 'issue' })
+    : await factsAPI('POST', '/api/facts/summary/build', { hours: 24 });
+  clearInterval(facts.tick);
+  facts.tick = null;
+  facts.busy = '';
+  facts.result = factsRunResultHTML(job, r);
+  const good = r.ok && (job === 'summary' || (r.data.run && r.data.run.status === 'ok'));
+  if (good) {
+    if (job === 'issue') {
+      facts.search = null;
+      facts.detail = null;
+      facts.tab = 'feed';
+      await factsLoadLatest();
+    } else {
+      facts.summary = { id: r.data.id || 0, res: null };
+      facts.tab = 'summaries';
+      await factsLoadSummaries();
+    }
+  }
+  await factsLoadStatus();
+  if (!factsOpen()) {
+    toast((job === 'issue' ? 'Выпуск: ' : 'Сводка: ') + (good ? 'готово' : 'не собрано — подробности в разделе «Интересные факты»'), !good);
+    return;
+  }
+  factsPaint('status', 'actions', 'tabs', 'body');
+}
+
+/* ---------- действия раздела ---------- */
+
+Object.assign(actions, {
+  factsRun(job) { factsRun(job); },
+  async factsTab(tab) {
+    facts.tab = tab === 'summaries' ? 'summaries' : 'feed';
+    factsPaint('tabs', 'body');
+    if (facts.tab === 'summaries' && !facts.summaries) { await factsLoadSummaries(); factsPaint('body'); }
+  },
+  async factsRefresh() {
+    await factsLoadStatus();
+    await Promise.all([factsLoadLatest(), facts.summaries || facts.tab === 'summaries' ? factsLoadSummaries() : null]);
+    if (facts.detail) facts.detail = { id: facts.detail.id, res: await factsAPI('GET', '/api/facts/issue?id=' + encodeURIComponent(facts.detail.id)) };
+    factsPaint('status', 'actions', 'body');
+  },
+  async factsIssue(id) {
+    if (!id) return;
+    facts.tab = 'feed';
+    facts.detail = { id, res: null };
+    factsPaint('tabs', 'body');
+    const res = await factsAPI('GET', '/api/facts/issue?id=' + encodeURIComponent(id));
+    if (!facts.detail || facts.detail.id !== id) return;
+    facts.detail.res = res;
+    factsPaint('body');
+    const body = $('window-body');
+    if (body) body.scrollTop = 0;
+  },
+  factsBack() { facts.detail = null; factsPaint('body'); },
+  async factsSearch() {
+    const input = $('facts-query');
+    facts.query = input ? input.value.trim() : '';
+    facts.detail = null;
+    if (!facts.query) { facts.search = null; factsPaint('body'); return; }
+    facts.search = null;
+    const res = await factsAPI('GET', '/api/facts/search?text=' + encodeURIComponent(facts.query));
+    facts.search = res;
+    factsPaint('body');
+  },
+  factsSearchReset() { facts.search = null; facts.query = ''; facts.detail = null; factsPaint('body'); },
+  async factsSummary(id) {
+    facts.summary = { id, res: null };
+    factsPaint('body');
+    const res = await factsAPI('GET', '/api/facts/summary?id=' + encodeURIComponent(id));
+    if (!facts.summary || facts.summary.id !== id) return;
+    facts.summary.res = res;
+    factsPaint('body');
+  },
+});
+
+// Ссылка источника внутри карточки выпуска: карточка сама кликабельна
+// (data-action), а общий обработчик гасит переход по умолчанию. Клик по
+// ссылке ловим раньше него и не пускаем дальше — открывается источник, а не
+// подробности.
+document.addEventListener('click', ev => {
+  if (ev.target.closest && ev.target.closest('a.facts-src')) ev.stopPropagation();
+}, true);
+
+factsLoadStatus();
+
 /* ---------- события DOM ---------- */
 
 document.addEventListener('click', ev => {
