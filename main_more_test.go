@@ -16,6 +16,7 @@ import (
 
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/agent"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/agents/agentstest"
+	"github.com/AlexS8332/AnimalGuide_Task18/internal/feed"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/history"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/invariants"
 	"github.com/AlexS8332/AnimalGuide_Task18/internal/llm"
@@ -51,7 +52,7 @@ func TestParseFlagsAll(t *testing.T) {
 		"-window", "7", "-keep-tools", "100", "-context-limit", "0", "-on-overflow", "trim")
 	o := parseFlags()
 	want := options{addr: "127.0.0.1:9999", data: "d", featureSpec: "+mcp,-guard", overflow: "trim", open: false, window: 7, keep: 100, limit: 0,
-		trials: "all", reportOut: filepath.Join("examples", "report.md")}
+		trials: "all", reportOut: filepath.Join("examples", "report.md"), factsServer: feed.DefaultServer}
 	if o != want {
 		t.Fatalf("флаги: %+v", o)
 	}
@@ -182,7 +183,7 @@ func TestMainServesUI(t *testing.T) {
 		}
 	}
 	joined := strings.Join(banner, "\n")
-	for _, want := range []string{"модель:     test-model", "источники:", "механизмы:", "загружено: 0"} {
+	for _, want := range []string{"модель:     test-model", "источники:", "механизмы:", "факты:", "загружено: 0"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("в баннере нет %q:\n%s", want, joined)
 		}
